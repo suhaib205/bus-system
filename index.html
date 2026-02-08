@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>نظام إدارة الحجوزات</title>
+    
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap');
+        body { font-family: 'Tajawal', sans-serif; background-color: #f8fafc; margin: 0; padding: 0; }
+        .seat-grid { display: grid; grid-template-columns: 1fr 1fr 0.4fr 1fr 1fr; gap: 10px; }
+        /* تصميم الكنبة الخلفية المتصلة */
+        .back-bench { display: flex; gap: 6px; grid-column: span 5; margin-top: 10px; }
+        @media print {
+            @page { size: A4; margin: 10mm; }
+            .no-print { display: none !important; }
+            .print-only { display: block !important; }
+            body { background: white; }
+            .print-container { border: 2px solid black !important; padding: 20px; border-radius: 0; }
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        const Icons = {
+            Bus: () => <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 6v6M15 6v6M2 12h19.6M18 18h3s.5-1.7.8-2.8c.1-.4.2-.8.2-1.2 0-.4-.1-.8-.2-1.2l-1.4-5C20.1 6.8 19.1 6 18 6H4a2 2 0 0 0-2 2v10h3"/><circle cx="7" cy="18" r="2"/><path d="M9 18h5"/><circle cx="16" cy="18" r="2"/></svg>,
+            User: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+            Plus: () => <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>,
+            Print: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>,
+            X: () => <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6 12 12"/></svg>
+        };
+
+        const App = () => {
+            const [buses, setBuses] = useState(() => JSON.parse(localStorage.getItem('buses_v9')) || []);
+            const [view, setView] = useState('list'); 
+            const [activeBusId, setActiveBusId] = useState(null);
+            const [formData, setFormData] = useState({ id: '', name: '', plate: '', seats: 49, max: 49, color: '#2563eb' });
+            const [modal, setModal] = useState({ open: false, seat: null, name: '' });
+
+            useEffect(() => { localStorage.setItem('buses_v9', JSON.stringify(buses)); }, [buses]);
+
+            const bus = buses.find(b => b.id === activeBusId);
+
+            const saveBus = (e) => {
+                e.preventDefault();
+                if (formData.id) {
+                    setBuses(buses.map(b => b.id === formData.id ? { ...b, ...formData } : b));
+                } else {
+                    setBuses([...buses, { ...formData, id: Date.now(), reservations: {} }]);
+                }
+                setView('list');
+            };
+
+            const toggleSeat = (num) => {
+                if (!bus.reservations[num] && Object.keys(bus.reservations).length >= bus.max) {
+                    alert('الباص مكتمل!'); return;
+                }
+                setModal({ open: true, seat: num, name: bus.reservations[num] || '' });
+            };
+
+            const confirmBooking = () => {
+                if (!modal.name.trim()) return;
+                setBuses(buses.map(b => b.id === activeBusId ? { ...b, reservations: { ...b.reservations, [modal.seat]: modal.name } } : b));
+                setModal({ open: false, seat: null, name: '' });
+            };
+
+            const renderLayout = (targetBus, isPrint = false) => {
+                const rows = Math.floor((targetBus.seats - (targetBus.seats % 4 || 4)) / 4);
+                let elements = [];
+                for (let i = 0; i < rows; i++) {
+                    const s = i * 4 + 1;
+                    elements.push(
+                        <div key={i} className="seat-grid mb-2">
+                            <Seat num={s} bus={targetBus} isPrint={isPrint} />
+                            <Seat num={s+1} bus={targetBus} isPrint={isPrint} />
+                            <div className="flex items-center justify-center text-[10px] text-gray-300 font-mono italic">{i+1}</div>
+                            <Seat num={s+2} bus={targetBus} isPrint={isPrint} />
+                            <Seat num={start+3} bus={targetBus} isPrint={isPrint} />
+                        </div>
+                    );
+                }
+                // آخر صف متصل
+                let lastSeats = [];
+                for (let s = rows * 4 + 1; s <= targetBus.seats; s++) lastSeats.push(s);
+                elements.push(
+                    <div key="last" className="back-bench">
+                        {lastSeats.map(n => <Seat key={n} num={n} bus={targetBus} isPrint={isPrint} isLast={true} />)}
+                    </div>
+                );
+                return elements;
+            };
+
+            const Seat = ({ num, bus, isPrint, isLast }) => {
+                const name = bus.reservations[num];
+                if (isPrint) return (
+                    <div className={`border border-black h-10 flex flex-col items-center justify-center flex-1 ${name ? 'bg-gray-100' : ''}`}>
+                        <span className="text-[7px] opacity-50">{num}</span>
+                        <span className="text-[9px] font-bold truncate px-0.5">{name || 'فارغ'}</span>
+                    </div>
+                );
+                return (
+                    <button onClick={() => toggleSeat(num)} className={`h-14 rounded-xl border-2 flex flex-col items-center justify-center relative active:scale-90 transition-transform ${name ? 'bg-slate-800 text-white border-slate-800' : 'bg-white border-slate-100 shadow-sm'} ${isLast ? 'flex-1' : ''}`}>
+                        <span className="absolute top-1 left-1.5 text-[8px] opacity-40">{num}</span>
+                        {name ? <Icons.User /> : <span className="text-[9px] text-gray-400 font-bold">متاح</span>}
+                        {name && <span className="text-[9px] w-full truncate px-1 font-bold mt-1">{name}</span>}
+                    </button>
+                );
+            };
+
+            return (
+                <div className="min-h-screen bg-slate-50 flex flex-col">
+                    <header className="bg-white p-4 shadow-sm flex justify-between items-center no-print">
+                        <div className="flex items-center gap-2" onClick={() => setView('list')}>
+                            <div className="bg-blue-600 text-white p-2 rounded-xl shadow-lg shadow-blue-200"><Icons.Bus /></div>
+                            <h1 className="text-xl font-bold text-slate-800">إدارة الباصات</h1>
+                        </div>
+                        {view === 'details' && (
+                            <button onClick={() => window.print()} className="p-2.5 bg-orange-100 text-orange-600 rounded-xl active:bg-orange-200 transition-colors">
+                                <Icons.Print />
+                            </button>
+                        )}
+                    </header>
+
+                    <main className="flex-1 p-4 max-w-xl mx-auto w-full no-print">
+                        {view === 'list' && (
+                            <div className="space-y-4">
+                                {buses.length === 0 && <div className="text-center py-20 text-slate-300">لا يوجد باصات مضافة</div>}
+                                {buses.map(b => (
+                                    <div key={b.id} onClick={() => { setActiveBusId(b.id); setView('details'); }} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center justify-between active:scale-95 transition-transform cursor-pointer">
+                                        <div className="flex items-center gap-4">
+                                            <div className="w-1.5 h-12 rounded-full" style={{ backgroundColor: b.color }}></div>
+                                            <div>
+                                                <h3 className="font-bold text-lg text-slate-800">{b.name}</h3>
+                                                <p className="text-sm text-slate-400 font-mono tracking-widest uppercase">{b.plate}</p>
+                                            </div>
+                                        </div>
+                                        <div className={`text-xs font-bold px-3 py-1.5 rounded-xl ${Object.keys(b.reservations).length >= b.max ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-600'}`}>
+                                            {Object.keys(b.reservations).length}/{b.max}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {view === 'form' && (
+                            <form onSubmit={saveBus} className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-4">
+                                <h2 className="text-2xl font-bold mb-4 text-slate-800">{formData.id ? 'تعديل البيانات' : 'إضافة باص جديد'}</h2>
+                                <input className="w-full p-4 rounded-2xl bg-slate-50 border-none ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 text-lg" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} required placeholder="اسم الباص (مثلاً: الملكي)" />
+                                <input className="w-full p-4 rounded-2xl bg-slate-50 border-none ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 text-lg font-mono uppercase" value={formData.plate} onChange={e => setFormData({ ...formData, plate: e.target.value })} required placeholder="رقم اللوحة" />
+                                <div className="grid grid-cols-2 gap-4">
+                                    <input type="number" className="w-full p-4 rounded-2xl bg-slate-50 border-none ring-1 ring-slate-200" value={formData.seats} onChange={e => setFormData({ ...formData, seats: Number(e.target.value) })} required />
+                                    <input type="number" className="w-full p-4 rounded-2xl bg-slate-50 border-none ring-1 ring-slate-200" value={formData.max} onChange={e => setFormData({ ...formData, max: Number(e.target.value) })} required />
+                                </div>
+                                <div className="flex gap-3 pt-4">
+                                    <button type="button" onClick={() => setView('list')} className="flex-1 p-4 rounded-2xl font-bold text-slate-400 bg-slate-100">إلغاء</button>
+                                    <button type="submit" className="flex-1 p-4 rounded-2xl font-bold text-white bg-blue-600 shadow-lg shadow-blue-200">حفظ الباص</button>
+                                </div>
+                            </form>
+                        )}
+
+                        {view === 'details' && bus && (
+                            <div className="animate-in fade-in duration-300">
+                                <div className="bg-white p-5 rounded-3xl shadow-sm border border-gray-100 mb-6 flex justify-between items-center border-r-8" style={{borderColor: bus.color}}>
+                                    <div>
+                                        <h2 className="text-2xl font-bold text-slate-800">{bus.name}</h2>
+                                        <p className="font-mono text-slate-400">{bus.plate}</p>
+                                    </div>
+                                    <div className="text-blue-600 font-bold text-xl">{Object.keys(bus.reservations).length} / {bus.max}</div>
+                                </div>
+                                {renderLayout(bus)}
+                            </div>
+                        )}
+                    </main>
+
+                    {view === 'list' && (
+                        <button onClick={() => { setFormData({ id: '', name: '', plate: '', seats: 49, max: 49, color: '#2563eb' }); setView('form'); }} className="fixed bottom-10 left-10 w-16 h-16 bg-blue-600 text-white rounded-full shadow-2xl flex items-center justify-center active:scale-75 transition-transform no-print">
+                            <Icons.Plus />
+                        </button>
+                    )}
+
+                    {modal.open && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-6 no-print">
+                            <div className="bg-white w-full max-w-sm rounded-[32px] p-8 shadow-2xl animate-in zoom-in duration-300">
+                                <div className="flex justify-between items-center mb-6">
+                                    <h3 className="text-2xl font-bold text-slate-800">المقعد {modal.seat}</h3>
+                                    <button onClick={() => setModal({ open: false })}><Icons.X /></button>
+                                </div>
+                                <input autoFocus className="w-full p-5 rounded-2xl bg-slate-50 border-none ring-2 ring-slate-100 focus:ring-blue-500 text-xl mb-6" placeholder="اسم الراكب..." value={modal.name} onChange={e => setModal({ ...modal, name: e.target.value })} />
+                                <div className="flex flex-col gap-3">
+                                    <button onClick={confirmBooking} className="p-4 rounded-2xl bg-blue-600 text-white font-bold text-lg shadow-lg">تأكيد الحجز</button>
+                                    {bus.reservations[modal.seat] && (
+                                        <button onClick={() => { setBuses(buses.map(b => { if(b.id === activeBusId){ const r={...b.reservations}; delete r[modal.seat]; return {...b, reservations:r}; } return b; })); setModal({open:false}); }} className="p-4 rounded-2xl bg-red-50 text-red-500 font-bold">إلغاء الحجز</button>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="hidden print-only p-8 bg-white text-black" dir="rtl">
+                        {bus && (
+                            <div className="border-2 border-black p-6">
+                                <div className="flex justify-between items-end border-b-2 border-black pb-4 mb-4">
+                                    <div><h1 className="text-2xl font-bold">كشف ركاب رسمي</h1><p>التاريخ: {new Date().toLocaleDateString('ar-SA')}</p></div>
+                                    <div className="text-left"><h2 className="text-xl font-bold">{bus.name}</h2><div className="border border-black px-4 font-bold mt-1 uppercase font-mono">{bus.plate}</div></div>
+                                </div>
+                                <div className="grid grid-cols-3 text-center text-xs font-bold border border-black p-2 mb-4">
+                                    <div>إجمالي المقاعد: {bus.seats}</div>
+                                    <div>المحجوز: {Object.keys(bus.reservations).length}</div>
+                                    <div>الحد الأقصى: {bus.max}</div>
+                                </div>
+                                {renderLayout(bus, true)}
+                                <div className="mt-10 pt-10 border-t border-black text-center text-sm">التوقيع والختم: ............................</div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
+
+
