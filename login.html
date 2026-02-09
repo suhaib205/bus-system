@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ar">
+<head>
+  <meta charset="utf-8">
+  <title>دخول الشركة</title>
+</head>
+<body>
+
+<h3>دخول الشركة</h3>
+
+<input id="email" placeholder="Email"><br><br>
+<input id="pass" type="password" placeholder="Password"><br><br>
+
+<button id="login">دخول</button>
+<p id="msg"></p>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyA2z69uVLcbaQo_BJ3sJic8kyhZaS8uRuE",
+  authDomain: "suhaib-bus-system.firebaseapp.com",
+  projectId: "suhaib-bus-system",
+  messagingSenderId: "992934203240",
+  appId: "1:992934203240:web:be7c580c8b8e5f87ce50dd"
+};
+
+initializeApp(firebaseConfig);
+const auth = getAuth();
+
+document.getElementById("login").onclick = async () => {
+  try{
+    await signInWithEmailAndPassword(
+      auth,
+      document.getElementById("email").value,
+      document.getElementById("pass").value
+    );
+    location.href = "index.html";
+  }catch(e){
+    document.getElementById("msg").textContent = "خطأ: " + e.message;
+  }
+};
+</script>
+
+</body>
+</html>
