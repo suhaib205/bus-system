@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>نظام الرحلات وحجوزات الباصات</title>
 
-  <!-- React + Babel + Tailwind -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -14,12 +13,9 @@
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap');
     body { font-family: 'Tajawal', sans-serif; background-color: #f8fafc; margin: 0; padding: 0; }
-
     .seat-grid { display: grid; grid-template-columns: 1fr 1fr 0.4fr 1fr 1fr; gap: 10px; }
     .back-bench { display: flex; gap: 6px; grid-column: span 5; margin-top: 10px; }
-
     .print-only { display: none; }
-
     @media print {
       @page { size: A4; margin: 10mm; }
       .no-print { display: none !important; }
@@ -31,18 +27,19 @@
 </head>
 
 <body>
-  <!-- شاشة تحميل أثناء التحقق من تسجيل الدخول -->
   <div id="auth-loading" class="min-h-screen flex items-center justify-center text-slate-500">
     جار التحقق من تسجيل الدخول...
   </div>
 
-  <!-- التطبيق (مخفي لحد ما نتأكد إنه المستخدم داخل) -->
   <div id="root" style="display:none"></div>
 
-  <!-- ✅ Firebase Auth Guard (مطلوب) -->
+  <!-- ✅ Auth Guard + Firestore bootstrap -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
     import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+    import {
+      getFirestore, collection, doc, getDocs, setDoc, addDoc, deleteDoc, updateDoc
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyA2z69uVLcbaQo_BJ3sJic8kyhZaS8uRuE",
@@ -54,244 +51,164 @@
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
+    const db = getFirestore(app);
 
-    // نعرّض auth و signOut للـReact (لزر تسجيل الخروج)
-    window.BusSystemAuth = auth;
-    window.busSystemSignOut = () => signOut(auth);
+    // helpers exposed to React
+    window.__BUS = {
+      auth,
+      db,
+      signOut: () => signOut(auth),
+
+      // Firestore paths (set after login)
+      uid: null,
+      busesCol: null,
+      tripsCol: null,
+
+      async loadAll() {
+        const busesSnap = await getDocs(this.busesCol);
+        const tripsSnap = await getDocs(this.tripsCol);
+
+        const buses = busesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const trips = tripsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+        return { buses, trips };
+      },
+
+      async createBus(bus) {
+        const ref = await addDoc(this.busesCol, bus);
+        return { id: ref.id, ...bus };
+      },
+
+      async updateBus(busId, patch) {
+        const ref = doc(this.db, "users", this.uid, "buses", busId);
+        await setDoc(ref, patch, { merge: true });
+      },
+
+      async deleteBus(busId) {
+        const ref = doc(this.db, "users", this.uid, "buses", busId);
+        await deleteDoc(ref);
+      },
+
+      async createTrip(trip) {
+        const ref = await addDoc(this.tripsCol, trip);
+        return { id: ref.id, ...trip };
+      },
+
+      async updateTrip(tripId, patch) {
+        const ref = doc(this.db, "users", this.uid, "trips", tripId);
+        await setDoc(ref, patch, { merge: true });
+      },
+
+      async updateTripFields(tripId, patch) {
+        const ref = doc(this.db, "users", this.uid, "trips", tripId);
+        await updateDoc(ref, patch);
+      },
+
+      async deleteTrip(tripId) {
+        const ref = doc(this.db, "users", this.uid, "trips", tripId);
+        await deleteDoc(ref);
+      }
+    };
 
     onAuthStateChanged(auth, (user) => {
       if (!user) {
-        // مش مسجل دخول → روح للّوجين
         location.replace("login.html");
         return;
       }
 
-      // مسجل دخول → افتح النظام
-      window.BUS_AUTH_USER = { uid: user.uid, email: user.email || "" };
+      // bind per-user collections
+      window.__BUS.uid = user.uid;
+      window.__BUS.busesCol = collection(db, "users", user.uid, "buses");
+      window.__BUS.tripsCol = collection(db, "users", user.uid, "trips");
 
       const loading = document.getElementById("auth-loading");
       const root = document.getElementById("root");
       if (loading) loading.style.display = "none";
       if (root) root.style.display = "block";
 
-      // حدث اختياري لو بدك تستخدمه
+      window.BUS_AUTH_USER = { uid: user.uid, email: user.email || "" };
       document.dispatchEvent(new CustomEvent("bus-auth-ready", { detail: window.BUS_AUTH_USER }));
     });
   </script>
 
-  <!-- ✅ React App -->
   <script type="text/babel" data-presets="env,react">
     const { useEffect, useMemo, useState } = React;
 
-    const STORAGE_KEY = 'bus_trip_booking_v1';
-
     const Icons = {
-      Bus: () => (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M8 6v6M15 6v6M2 12h19.6M18 18h3s.5-1.7.8-2.8c.1-.4.2-.8.2-1.2 0-.4-.1-.8-.2-1.2l-1.4-5C20.1 6.8 19.1 6 18 6H4a2 2 0 0 0-2 2v10h3"/>
-          <circle cx="7" cy="18" r="2"/>
-          <path d="M9 18h5"/>
-          <circle cx="16" cy="18" r="2"/>
-        </svg>
-      ),
-      Trip: () => (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M8 2v4M16 2v4M3 9h18"/>
-          <rect x="3" y="4" width="18" height="18" rx="2"/>
-          <path d="M7 13h4M7 17h6"/>
-        </svg>
-      ),
-      User: () => (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
-          <circle cx="12" cy="7" r="4"/>
-        </svg>
-      ),
-      Plus: () => (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M12 5v14M5 12h14"/>
-        </svg>
-      ),
-      Print: () => (
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/>
-        </svg>
-      ),
-      X: () => (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M18 6 6 18M6 6 18 18"/>
-        </svg>
-      ),
-      Back: () => (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M15 18l-6-6 6-6"/>
-        </svg>
-      ),
-      Edit: () => (
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M12 20h9"/>
-          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>
-        </svg>
-      ),
-      Trash: () => (
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M3 6h18"/>
-          <path d="M8 6V4h8v2"/>
-          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-          <path d="M10 11v6M14 11v6"/>
-        </svg>
-      ),
-      Download: () => (
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-          <path d="M7 10l5 5 5-5"/>
-          <path d="M12 15V3"/>
-        </svg>
-      ),
-      Lock: () => (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <rect x="3" y="11" width="18" height="11" rx="2"/>
-          <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-        </svg>
-      ),
-      Unlock: () => (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <rect x="3" y="11" width="18" height="11" rx="2"/>
-          <path d="M7 11V8a5 5 0 0 1 9-3"/>
-        </svg>
-      ),
-      Check: () => (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M20 6L9 17l-5-5"/>
-        </svg>
-      ),
-      Search: () => (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <circle cx="11" cy="11" r="7"/>
-          <path d="M21 21l-4.3-4.3"/>
-        </svg>
-      ),
-      Logout: () => (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-          <path d="M16 17l5-5-5-5"/>
-          <path d="M21 12H9"/>
-        </svg>
-      )
+      Bus: () => <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 6v6M15 6v6M2 12h19.6M18 18h3s.5-1.7.8-2.8c.1-.4.2-.8.2-1.2 0-.4-.1-.8-.2-1.2l-1.4-5C20.1 6.8 19.1 6 18 6H4a2 2 0 0 0-2 2v10h3"/><circle cx="7" cy="18" r="2"/><path d="M9 18h5"/><circle cx="16" cy="18" r="2"/></svg>,
+      Trip: () => <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 2v4M16 2v4M3 9h18"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M7 13h4M7 17h6"/></svg>,
+      User: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+      Plus: () => <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>,
+      Print: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>,
+      X: () => <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6 18 18"/></svg>,
+      Back: () => <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>,
+      Edit: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>,
+      Trash: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>,
+      Logout: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>,
+      Lock: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>,
+      Unlock: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V8a5 5 0 0 1 9-3"/></svg>,
+      Check: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 6L9 17l-5-5"/></svg>,
+      Search: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>,
     };
 
     const pad2 = (n) => String(n).padStart(2, '0');
-
     const toDatetimeLocal = (ms) => {
       const d = new Date(ms);
-      const y = d.getFullYear();
-      const m = pad2(d.getMonth() + 1);
-      const day = pad2(d.getDate());
-      const hh = pad2(d.getHours());
-      const mm = pad2(d.getMinutes());
-      return `${y}-${m}-${day}T${hh}:${mm}`;
+      return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
     };
-
     const parseDatetimeLocal = (value) => {
       if (!value || value.indexOf('T') === -1) return Date.now();
-      const parts = value.split('T');
-      const datePart = parts[0];
-      const timePart = parts[1];
-      const dParts = datePart.split('-').map(Number);
-      const tParts = timePart.split(':').map(Number);
-      const y = dParts[0], m = dParts[1], d = dParts[2];
-      const hh = tParts[0], mm = tParts[1];
-      return new Date(y, (m - 1), d, hh, mm, 0, 0).getTime();
+      const [datePart, timePart] = value.split('T');
+      const [y,m,d] = datePart.split('-').map(Number);
+      const [hh,mm] = timePart.split(':').map(Number);
+      return new Date(y, m-1, d, hh, mm, 0, 0).getTime();
     };
-
     const formatDateTimeAr = (ms) => {
-      try {
-        return new Intl.DateTimeFormat('ar-SA', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(ms));
-      } catch (e) {
-        try {
-          return new Date(ms).toLocaleString('ar-SA');
-        } catch (e2) {
-          return new Date(ms).toLocaleString();
-        }
-      }
-    };
-
-    const safeParse = (s) => {
-      try { return JSON.parse(s); } catch (e) { return null; }
-    };
-
-    const migrateFromOldIfNeeded = () => {
-      const current = safeParse(localStorage.getItem(STORAGE_KEY));
-      if (current && typeof current === 'object') return current;
-
-      const old = safeParse(localStorage.getItem('buses_v9'));
-      if (!Array.isArray(old) || old.length === 0) return { buses: [], trips: [] };
-
-      const now = Date.now();
-      const buses = old.map((b, idx) => ({
-        id: b.id || (now + idx + 1),
-        name: b.name || 'باص',
-        plate: (b.plate || '').toUpperCase(),
-        seats: Number(b.seats || 49),
-        color: b.color || '#2563eb',
-        createdAt: now
-      }));
-
-      const trips = old.map((b, idx) => {
-        const resObj = {};
-        const oldRes = b.reservations || {};
-        Object.keys(oldRes).forEach((seat) => {
-          resObj[seat] = { name: String(oldRes[seat]), phone: '', paid: false, note: '', createdAt: now };
-        });
-
-        return {
-          id: now + 1000 + idx,
-          busId: b.id || buses[idx].id,
-          routeFrom: '',
-          routeTo: '',
-          departAt: now,
-          maxBookings: null,
-          notes: 'رحلة مستوردة من النسخة القديمة',
-          reservations: resObj,
-          blocked: {}
-        };
-      });
-
-      return { buses, trips };
+      try { return new Intl.DateTimeFormat('ar-SA', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(ms)); }
+      catch { return new Date(ms).toLocaleString(); }
     };
 
     const App = () => {
-      const [data, setData] = useState(() => migrateFromOldIfNeeded());
+      const [isLoading, setIsLoading] = useState(true);
+      const [data, setData] = useState({ buses: [], trips: [] });
+
       const [tab, setTab] = useState('trips'); // trips | buses
       const [view, setView] = useState('list'); // list | form | details
       const [activeTripId, setActiveTripId] = useState(null);
 
       const [busForm, setBusForm] = useState({ id: null, name: '', plate: '', seats: 49, color: '#2563eb' });
-      const [tripForm, setTripForm] = useState({
-        id: null,
-        busId: '',
-        routeFrom: 'الرياض',
-        routeTo: 'مكة',
-        departAt: Date.now() + 60 * 60 * 1000,
-        maxBookings: '',
-        notes: ''
-      });
+      const [tripForm, setTripForm] = useState({ id: null, busId: '', routeFrom: 'الرياض', routeTo: 'مكة', departAt: Date.now(), maxBookings: '', notes: '' });
 
       const [seatModal, setSeatModal] = useState({ open: false, seat: null, name: '', phone: '', paid: false, note: '', isBlocked: false });
       const [searchTerm, setSearchTerm] = useState('');
       const [highlightSeat, setHighlightSeat] = useState(null);
-      const [authEmail, setAuthEmail] = useState((window.BUS_AUTH_USER && window.BUS_AUTH_USER.email) ? window.BUS_AUTH_USER.email : '');
 
+      // ✅ تحميل بيانات المستخدم من Firestore أول ما auth جاهز
       useEffect(() => {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      }, [data]);
-
-      useEffect(() => {
-        const onReady = (e) => {
-          if (e && e.detail && e.detail.email) setAuthEmail(e.detail.email);
+        const load = async () => {
+          try {
+            const BUS = window.__BUS;
+            if (!BUS || !BUS.uid) return;
+            setIsLoading(true);
+            const all = await BUS.loadAll();
+            // فرز بسيط
+            const buses = (all.buses || []).sort((a,b) => (b.createdAt||0) - (a.createdAt||0));
+            const trips = (all.trips || []).sort((a,b) => (b.departAt||0) - (a.departAt||0));
+            setData({ buses, trips });
+          } catch (e) {
+            alert("صار خطأ أثناء تحميل البيانات من Firestore.");
+          } finally {
+            setIsLoading(false);
+          }
         };
-        document.addEventListener('bus-auth-ready', onReady);
-        return () => document.removeEventListener('bus-auth-ready', onReady);
+
+        const handler = () => load();
+        document.addEventListener("bus-auth-ready", handler);
+
+        // إذا الحدث صار قبل ما يركب React
+        if (window.__BUS && window.__BUS.uid) load();
+
+        return () => document.removeEventListener("bus-auth-ready", handler);
       }, []);
 
       const buses = data.buses || [];
@@ -308,51 +225,68 @@
         const reserved = Object.keys(trip.reservations || {}).length;
         const paid = Object.values(trip.reservations || {}).filter(r => r && r.paid).length;
         const blocked = Object.keys(trip.blocked || {}).length;
-
-        const availableSeats = Math.max(0, bus.seats - blocked);
+        const availableSeats = Math.max(0, (bus.seats || 0) - blocked);
         const desiredMax = (trip.maxBookings === null || trip.maxBookings === undefined) ? availableSeats : trip.maxBookings;
         const effectiveMax = Math.min(desiredMax, availableSeats);
-
         return { reserved, paid, blocked, effectiveMax };
       };
 
-      const upsertBus = (e) => {
+      // ✅ CRUD buses (Firestore)
+      const upsertBus = async (e) => {
         e.preventDefault();
-        const seats = Math.max(1, Number(busForm.seats || 1));
-        const id = (busForm.id !== null && busForm.id !== undefined) ? busForm.id : Date.now();
+        const BUS = window.__BUS;
 
-        const bus = {
-          id,
+        const seats = Math.max(1, Number(busForm.seats || 1));
+        const payload = {
           name: (busForm.name || '').trim(),
           plate: (busForm.plate || '').trim().toUpperCase(),
           seats,
           color: busForm.color || '#2563eb',
-          createdAt: Date.now()
+          createdAt: busForm.id ? (buses.find(b => b.id === busForm.id)?.createdAt || Date.now()) : Date.now(),
         };
 
-        setData((prev) => {
-          const exists = (prev.buses || []).some(b => b.id === bus.id);
-          const nextBuses = exists ? prev.buses.map(b => b.id === bus.id ? bus : b) : [bus, ...(prev.buses || [])];
-          return { ...prev, buses: nextBuses };
-        });
-
-        setView('list');
+        try {
+          if (!busForm.id) {
+            const created = await BUS.createBus(payload);
+            setData(prev => ({ ...prev, buses: [created, ...(prev.buses || [])] }));
+          } else {
+            await BUS.updateBus(busForm.id, payload);
+            setData(prev => ({ ...prev, buses: (prev.buses || []).map(b => b.id === busForm.id ? { ...b, ...payload } : b) }));
+          }
+          setView('list');
+        } catch (e2) {
+          alert("تعذّر حفظ الباص. تأكد من Firestore Rules.");
+        }
       };
 
-      const deleteBus = (busId) => {
+      const deleteBus = async (busId) => {
         const bus = buses.find(b => b.id === busId);
         if (!bus) return;
         const ok = confirm(`حذف الباص "${bus.name}"؟ سيتم حذف كل الرحلات التابعة له.`);
         if (!ok) return;
 
-        setData((prev) => ({
-          buses: (prev.buses || []).filter(b => b.id !== busId),
-          trips: (prev.trips || []).filter(t => t.busId !== busId)
-        }));
+        const BUS = window.__BUS;
+        try {
+          // احذف رحلاته أولاً
+          const relatedTrips = trips.filter(t => t.busId === busId);
+          for (const t of relatedTrips) {
+            await BUS.deleteTrip(t.id);
+          }
+          await BUS.deleteBus(busId);
+
+          setData(prev => ({
+            buses: (prev.buses || []).filter(b => b.id !== busId),
+            trips: (prev.trips || []).filter(t => t.busId !== busId)
+          }));
+        } catch (e) {
+          alert("تعذّر حذف الباص/الرحلات.");
+        }
       };
 
-      const upsertTrip = (e) => {
+      // ✅ CRUD trips (Firestore)
+      const upsertTrip = async (e) => {
         e.preventDefault();
+        const BUS = window.__BUS;
         if (!tripForm.busId) { alert('اختر الباص'); return; }
 
         const bus = buses.find(b => String(b.id) === String(tripForm.busId));
@@ -362,37 +296,58 @@
           ? null
           : Math.max(0, Math.min(bus.seats, Number(tripForm.maxBookings)));
 
-        const id = (tripForm.id !== null && tripForm.id !== undefined) ? tripForm.id : Date.now();
+        try {
+          if (!tripForm.id) {
+            const payload = {
+              busId: bus.id,
+              routeFrom: (tripForm.routeFrom || '').trim(),
+              routeTo: (tripForm.routeTo || '').trim(),
+              departAt: Number(tripForm.departAt || Date.now()),
+              maxBookings: maxBookingsNum,
+              notes: (tripForm.notes || '').trim(),
+              reservations: {},
+              blocked: {},
+              createdAt: Date.now(),
+            };
+            const created = await BUS.createTrip(payload);
+            setData(prev => ({ ...prev, trips: [created, ...(prev.trips || [])] }));
+          } else {
+            const existing = trips.find(t => t.id === tripForm.id);
+            const payload = {
+              busId: bus.id,
+              routeFrom: (tripForm.routeFrom || '').trim(),
+              routeTo: (tripForm.routeTo || '').trim(),
+              departAt: Number(tripForm.departAt || Date.now()),
+              maxBookings: maxBookingsNum,
+              notes: (tripForm.notes || '').trim(),
+              // لا نلمس الحجوزات عند تعديل معلومات الرحلة
+              reservations: existing?.reservations || {},
+              blocked: existing?.blocked || {},
+            };
+            await BUS.updateTrip(tripForm.id, payload);
+            setData(prev => ({ ...prev, trips: (prev.trips || []).map(t => t.id === tripForm.id ? { ...t, ...payload } : t) }));
+          }
 
-        const existing = trips.find(t => t.id === id);
-        const trip = {
-          id,
-          busId: bus.id,
-          routeFrom: (tripForm.routeFrom || '').trim(),
-          routeTo: (tripForm.routeTo || '').trim(),
-          departAt: Number(tripForm.departAt || Date.now()),
-          maxBookings: maxBookingsNum,
-          notes: (tripForm.notes || '').trim(),
-          reservations: existing ? (existing.reservations || {}) : {},
-          blocked: existing ? (existing.blocked || {}) : {}
-        };
-
-        setData((prev) => {
-          const exists = (prev.trips || []).some(t => t.id === trip.id);
-          const nextTrips = exists ? prev.trips.map(t => t.id === trip.id ? trip : t) : [trip, ...(prev.trips || [])];
-          return { ...prev, trips: nextTrips };
-        });
-
-        setTab('trips');
-        setView('list');
+          setTab('trips');
+          setView('list');
+        } catch (e2) {
+          alert("تعذّر حفظ الرحلة.");
+        }
       };
 
-      const deleteTrip = (tripId) => {
+      const deleteTrip = async (tripId) => {
         const ok = confirm('حذف الرحلة نهائيًا؟');
         if (!ok) return;
-        setData((prev) => ({ ...prev, trips: (prev.trips || []).filter(t => t.id !== tripId) }));
-        setActiveTripId(null);
-        setView('list');
+
+        const BUS = window.__BUS;
+        try {
+          await BUS.deleteTrip(tripId);
+          setData(prev => ({ ...prev, trips: (prev.trips || []).filter(t => t.id !== tripId) }));
+          setActiveTripId(null);
+          setView('list');
+        } catch (e) {
+          alert("تعذّر حذف الرحلة.");
+        }
       };
 
       const openTripDetails = (tripId) => {
@@ -401,6 +356,12 @@
         setTab('trips');
         setSearchTerm('');
         setHighlightSeat(null);
+      };
+
+      // ✅ تحديث الحجوزات/المقاعد مباشرة في Firestore
+      const persistTripReservations = async (tripId, patch) => {
+        const BUS = window.__BUS;
+        await BUS.updateTripFields(tripId, patch);
       };
 
       const openSeat = (num) => {
@@ -420,20 +381,19 @@
         setSeatModal({
           open: true,
           seat: num,
-          name: (existing && existing.name) ? existing.name : '',
-          phone: (existing && existing.phone) ? existing.phone : '',
-          paid: !!(existing && existing.paid),
-          note: (existing && existing.note) ? existing.note : '',
+          name: existing?.name || '',
+          phone: existing?.phone || '',
+          paid: !!existing?.paid,
+          note: existing?.note || '',
           isBlocked
         });
       };
 
       const closeSeatModal = () => setSeatModal({ open: false, seat: null, name: '', phone: '', paid: false, note: '', isBlocked: false });
 
-      const saveSeatReservation = () => {
+      const saveSeatReservation = async () => {
         if (!activeTrip) return;
         if (seatModal.isBlocked) { alert('هذا المقعد مغلق. افتحه أولاً ثم احجز.'); return; }
-
         const name = (seatModal.name || '').trim();
         if (!name) return;
 
@@ -446,119 +406,85 @@
           createdAt: Date.now()
         };
 
-        setData((prev) => ({
-          ...prev,
-          trips: (prev.trips || []).map(t => {
-            if (t.id !== activeTrip.id) return t;
-            return { ...t, reservations: { ...(t.reservations || {}), [seat]: payload } };
-          })
-        }));
+        const nextReservations = { ...(activeTrip.reservations || {}), [seat]: payload };
 
-        closeSeatModal();
+        try {
+          await persistTripReservations(activeTrip.id, { reservations: nextReservations });
+          setData(prev => ({
+            ...prev,
+            trips: (prev.trips || []).map(t => t.id === activeTrip.id ? { ...t, reservations: nextReservations } : t)
+          }));
+          closeSeatModal();
+        } catch {
+          alert("تعذّر حفظ الحجز.");
+        }
       };
 
-      const deleteSeatReservation = () => {
+      const deleteSeatReservation = async () => {
         if (!activeTrip) return;
         const ok = confirm('إلغاء حجز هذا المقعد؟');
         if (!ok) return;
 
         const seat = seatModal.seat;
-        setData((prev) => ({
-          ...prev,
-          trips: (prev.trips || []).map(t => {
-            if (t.id !== activeTrip.id) return t;
-            const next = { ...(t.reservations || {}) };
-            delete next[seat];
-            return { ...t, reservations: next };
-          })
-        }));
+        const next = { ...(activeTrip.reservations || {}) };
+        delete next[seat];
 
-        closeSeatModal();
+        try {
+          await persistTripReservations(activeTrip.id, { reservations: next });
+          setData(prev => ({
+            ...prev,
+            trips: (prev.trips || []).map(t => t.id === activeTrip.id ? { ...t, reservations: next } : t)
+          }));
+          closeSeatModal();
+        } catch {
+          alert("تعذّر إلغاء الحجز.");
+        }
       };
 
-      const toggleBlockSeat = () => {
+      const toggleBlockSeat = async () => {
         if (!activeTrip) return;
+
         const seat = seatModal.seat;
+        const nextBlocked = { ...(activeTrip.blocked || {}) };
+        const nextRes = { ...(activeTrip.reservations || {}) };
 
-        setData((prev) => ({
-          ...prev,
-          trips: (prev.trips || []).map(t => {
-            if (t.id !== activeTrip.id) return t;
+        if (nextBlocked[seat]) {
+          delete nextBlocked[seat];
+        } else {
+          if (nextRes[seat]) {
+            const ok = confirm('المقعد عليه حجز. إغلاق المقعد سيحذف الحجز. هل تريد المتابعة؟');
+            if (!ok) return;
+            delete nextRes[seat];
+          }
+          nextBlocked[seat] = true;
+        }
 
-            const nextBlocked = { ...(t.blocked || {}) };
-            const nextRes = { ...(t.reservations || {}) };
-
-            if (nextBlocked[seat]) {
-              delete nextBlocked[seat];
-            } else {
-              if (nextRes[seat]) {
-                const ok = confirm('المقعد عليه حجز. إغلاق المقعد سيحذف الحجز. هل تريد المتابعة؟');
-                if (!ok) return t;
-                delete nextRes[seat];
-              }
-              nextBlocked[seat] = true;
-            }
-
-            return { ...t, blocked: nextBlocked, reservations: nextRes };
-          })
-        }));
-
-        setSeatModal((m) => ({ ...m, isBlocked: !m.isBlocked, name: '', phone: '', paid: false, note: '' }));
+        try {
+          await persistTripReservations(activeTrip.id, { blocked: nextBlocked, reservations: nextRes });
+          setData(prev => ({
+            ...prev,
+            trips: (prev.trips || []).map(t => t.id === activeTrip.id ? { ...t, blocked: nextBlocked, reservations: nextRes } : t)
+          }));
+          setSeatModal(m => ({ ...m, isBlocked: !!nextBlocked[seat], name: '', phone: '', paid: false, note: '' }));
+        } catch {
+          alert("تعذّر تحديث حالة المقعد.");
+        }
       };
 
-      const clearAllReservations = () => {
+      const clearAllReservations = async () => {
         if (!activeTrip) return;
         const ok = confirm('مسح جميع حجوزات هذه الرحلة؟');
         if (!ok) return;
 
-        setData((prev) => ({
-          ...prev,
-          trips: (prev.trips || []).map(t => t.id === activeTrip.id ? { ...t, reservations: {} } : t)
-        }));
-      };
-
-      const exportTripCsv = () => {
-        if (!activeTrip || !activeTripBus) return;
-
-        const res = activeTrip.reservations || {};
-        const rows = Object.keys(res)
-          .map(seat => {
-            const r = res[seat] || {};
-            return { seat: Number(seat), name: r.name || '', phone: r.phone || '', paid: !!r.paid, note: r.note || '', createdAt: r.createdAt || Date.now() };
-          })
-          .sort((a, b) => a.seat - b.seat);
-
-        const header = ['Seat', 'Name', 'Phone', 'Paid', 'Note', 'CreatedAt'];
-
-        const escape = (v) => {
-          const s = String((v === null || v === undefined) ? '' : v);
-          if (/[,"\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-          return s;
-        };
-
-        const csvLines = [
-          header.join(','),
-          ...rows.map(r => [
-            r.seat,
-            escape(r.name),
-            escape(r.phone),
-            r.paid ? 'YES' : 'NO',
-            escape(r.note),
-            new Date(r.createdAt).toISOString()
-          ].join(','))
-        ];
-
-        const blob = new Blob([csvLines.join('\n')], { type: 'text/csv;charset=utf-8' });
-        const a = document.createElement('a');
-        const from = activeTrip.routeFrom || 'from';
-        const to = activeTrip.routeTo || 'to';
-        const date = new Date(activeTrip.departAt).toISOString().slice(0, 10);
-        a.download = (`trip_${from}_${to}_${date}_${activeTripBus.plate || 'bus'}.csv`).replace(/\s+/g, '_');
-        a.href = URL.createObjectURL(blob);
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(a.href);
+        try {
+          await persistTripReservations(activeTrip.id, { reservations: {} });
+          setData(prev => ({
+            ...prev,
+            trips: (prev.trips || []).map(t => t.id === activeTrip.id ? { ...t, reservations: {} } : t)
+          }));
+        } catch {
+          alert("تعذّر مسح الحجوزات.");
+        }
       };
 
       const scrollToSeat = (seatNum) => {
@@ -574,11 +500,9 @@
         if (!bus || !trip) return null;
 
         const seatsPerRow = 4;
-        const mod = bus.seats % seatsPerRow;
-
-        // ✅ منطق الكنبة الخلفية: لو %4 = 1 غالبًا آخر صف 5 (مثل 49)
+        const mod = (bus.seats || 0) % seatsPerRow;
         const benchSeats = (mod === 1) ? Math.min(5, bus.seats) : (mod || seatsPerRow);
-        const rows = Math.max(0, Math.floor((bus.seats - benchSeats) / seatsPerRow));
+        const rows = Math.max(0, Math.floor(((bus.seats || 0) - benchSeats) / seatsPerRow));
 
         const elements = [];
 
@@ -596,7 +520,7 @@
         }
 
         const lastSeats = [];
-        for (let n = rows * seatsPerRow + 1; n <= bus.seats; n++) lastSeats.push(n);
+        for (let n = rows * seatsPerRow + 1; n <= (bus.seats || 0); n++) lastSeats.push(n);
 
         if (lastSeats.length) {
           elements.push(
@@ -649,7 +573,6 @@
             id={`seat-${num}`}
             onClick={() => openSeat(num)}
             className={`${base} ${cls} ${ring}`}
-            title={r ? `${r.name}${r.phone ? ' - ' + r.phone : ''}` : (isBlocked ? 'مقعد مغلق' : 'متاح')}
           >
             <span className="absolute top-1 left-1.5 text-[8px] opacity-40">{num}</span>
             {isBlocked ? <Icons.Lock /> : (r ? <Icons.User /> : null)}
@@ -659,47 +582,37 @@
         );
       };
 
-      const TripsList = () => {
-        const sorted = [...trips].sort((a, b) => (b.departAt - a.departAt));
+      const logout = async () => {
+        try {
+          await window.__BUS.signOut();
+          location.replace("login.html");
+        } catch {
+          alert("صار خطأ أثناء تسجيل الخروج.");
+        }
+      };
 
+      const TripsList = () => {
+        const sorted = [...trips].sort((a,b) => (b.departAt||0) - (a.departAt||0));
         return (
           <div className="space-y-4">
-            {sorted.length === 0 && (
-              <div className="text-center py-16 text-slate-300">
-                لا يوجد رحلات. اضغط + لإضافة رحلة جديدة.
-              </div>
-            )}
-
+            {sorted.length === 0 && <div className="text-center py-16 text-slate-300">لا يوجد رحلات. اضغط + لإضافة رحلة.</div>}
             {sorted.map((t) => {
               const bus = buses.find(b => b.id === t.busId);
               const stats = tripStats(t, bus);
               const route = `${t.routeFrom || '---'} → ${t.routeTo || '---'}`;
-
               return (
-                <div
-                  key={t.id}
-                  onClick={() => openTripDetails(t.id)}
-                  className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center justify-between active:scale-95 transition-transform cursor-pointer"
-                >
+                <div key={t.id} onClick={() => openTripDetails(t.id)}
+                     className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center justify-between active:scale-95 transition-transform cursor-pointer">
                   <div className="flex items-center gap-4 min-w-0">
                     <div className="w-1.5 h-12 rounded-full" style={{ backgroundColor: bus ? bus.color : '#cbd5e1' }}></div>
                     <div className="min-w-0">
                       <h3 className="font-bold text-lg text-slate-800 truncate">{route}</h3>
-                      <p className="text-sm text-slate-500">{formatDateTimeAr(t.departAt)}</p>
-                      <p className="text-xs text-slate-400 font-mono uppercase truncate">
-                        {bus ? `${bus.name} • ${bus.plate}` : 'باص محذوف'}
-                      </p>
+                      <p className="text-sm text-slate-500">{formatDateTimeAr(t.departAt || Date.now())}</p>
+                      <p className="text-xs text-slate-400 font-mono uppercase truncate">{bus ? `${bus.name} • ${bus.plate}` : 'باص محذوف'}</p>
                     </div>
                   </div>
-
-                  <div className="flex flex-col items-end gap-2">
-                    <div className={`text-xs font-bold px-3 py-1.5 rounded-xl ${stats.reserved >= stats.effectiveMax ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-700'}`}>
-                      {stats.reserved}/{stats.effectiveMax}
-                    </div>
-                    <div className="text-[11px] text-slate-500">
-                      مدفوع: <span className="font-bold">{stats.paid}</span>
-                      {stats.blocked ? <span> • مغلق: <span className="font-bold">{stats.blocked}</span></span> : null}
-                    </div>
+                  <div className={`text-xs font-bold px-3 py-1.5 rounded-xl ${stats.reserved >= stats.effectiveMax ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-700'}`}>
+                    {stats.reserved}/{stats.effectiveMax}
                   </div>
                 </div>
               );
@@ -708,126 +621,72 @@
         );
       };
 
-      const BusesList = () => {
-        return (
-          <div className="space-y-4">
-            {buses.length === 0 && (
-              <div className="text-center py-16 text-slate-300">
-                لا يوجد باصات. اضغط + لإضافة باص.
+      const BusesList = () => (
+        <div className="space-y-4">
+          {buses.length === 0 && <div className="text-center py-16 text-slate-300">لا يوجد باصات. اضغط + لإضافة باص.</div>}
+          {buses.map((b) => (
+            <div key={b.id} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center justify-between">
+              <div className="flex items-center gap-4 min-w-0">
+                <div className="w-1.5 h-12 rounded-full" style={{ backgroundColor: b.color || '#2563eb' }}></div>
+                <div className="min-w-0">
+                  <h3 className="font-bold text-lg text-slate-800 truncate">{b.name}</h3>
+                  <p className="text-sm text-slate-400 font-mono tracking-widest uppercase truncate">{b.plate}</p>
+                  <p className="text-xs text-slate-400">مقاعد: <span className="font-bold">{b.seats}</span></p>
+                </div>
               </div>
-            )}
-
-            {buses.map((b) => {
-              const busTripsCount = trips.filter(t => t.busId === b.id).length;
-              return (
-                <div key={b.id} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center justify-between">
-                  <div className="flex items-center gap-4 min-w-0">
-                    <div className="w-1.5 h-12 rounded-full" style={{ backgroundColor: b.color }}></div>
-                    <div className="min-w-0">
-                      <h3 className="font-bold text-lg text-slate-800 truncate">{b.name}</h3>
-                      <p className="text-sm text-slate-400 font-mono tracking-widest uppercase truncate">{b.plate}</p>
-                      <p className="text-xs text-slate-400">مقاعد: <span className="font-bold">{b.seats}</span> • رحلات: <span className="font-bold">{busTripsCount}</span></p>
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => { setBusForm({ id: b.id, name: b.name, plate: b.plate, seats: b.seats, color: b.color }); setView('form'); setTab('buses'); }}
-                      className="p-2.5 rounded-xl bg-slate-100 text-slate-700 active:bg-slate-200"
-                      title="تعديل"
-                    >
-                      <Icons.Edit />
-                    </button>
-                    <button
-                      onClick={() => deleteBus(b.id)}
-                      className="p-2.5 rounded-xl bg-red-50 text-red-600 active:bg-red-100"
-                      title="حذف"
-                    >
-                      <Icons.Trash />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        );
-      };
+              <div className="flex gap-2">
+                <button onClick={() => { setBusForm({ id: b.id, name: b.name, plate: b.plate, seats: b.seats, color: b.color }); setView('form'); setTab('buses'); }}
+                        className="p-2.5 rounded-xl bg-slate-100 text-slate-700 active:bg-slate-200" title="تعديل">
+                  <Icons.Edit />
+                </button>
+                <button onClick={() => deleteBus(b.id)} className="p-2.5 rounded-xl bg-red-50 text-red-600 active:bg-red-100" title="حذف">
+                  <Icons.Trash />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      );
 
       const TripDetails = () => {
-        if (!activeTrip || !activeTripBus) {
-          return <div className="bg-white p-6 rounded-2xl border border-gray-100 text-slate-500">الرحلة غير موجودة أو الباص محذوف.</div>;
-        }
-
+        if (!activeTrip || !activeTripBus) return <div className="bg-white p-6 rounded-2xl border border-gray-100 text-slate-500">الرحلة غير موجودة أو الباص محذوف.</div>;
         const stats = tripStats(activeTrip, activeTripBus);
         const route = `${activeTrip.routeFrom || '---'} → ${activeTrip.routeTo || '---'}`;
 
         const resEntries = Object.entries(activeTrip.reservations || {})
           .map(([seat, r]) => ({ seat: Number(seat), ...r }))
-          .sort((a, b) => a.seat - b.seat);
+          .sort((a,b) => a.seat - b.seat);
 
         const q = (searchTerm || '').trim().toLowerCase();
-        const filtered = resEntries.filter((r) => {
-          if (!q) return true;
-          return (
-            String(r.seat).includes(q) ||
-            String(r.name || '').toLowerCase().includes(q) ||
-            String(r.phone || '').toLowerCase().includes(q) ||
-            String(r.note || '').toLowerCase().includes(q)
-          );
-        });
+        const filtered = resEntries.filter(r =>
+          !q ||
+          String(r.seat).includes(q) ||
+          String(r.name || '').toLowerCase().includes(q) ||
+          String(r.phone || '').toLowerCase().includes(q) ||
+          String(r.note || '').toLowerCase().includes(q)
+        );
 
         return (
           <div className="space-y-4">
-            <div className="bg-white p-5 rounded-3xl shadow-sm border border-gray-100 border-r-8" style={{ borderColor: activeTripBus.color }}>
+            <div className="bg-white p-5 rounded-3xl shadow-sm border border-gray-100 border-r-8" style={{ borderColor: activeTripBus.color || '#2563eb' }}>
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <h2 className="text-2xl font-bold text-slate-800 truncate">{route}</h2>
-                  <p className="text-slate-500">{formatDateTimeAr(activeTrip.departAt)}</p>
+                  <p className="text-slate-500">{formatDateTimeAr(activeTrip.departAt || Date.now())}</p>
                   <p className="text-xs text-slate-400 font-mono uppercase truncate">{activeTripBus.name} • {activeTripBus.plate}</p>
                 </div>
-
                 <div className="text-left">
                   <div className="text-blue-600 font-bold text-xl">{stats.reserved} / {stats.effectiveMax}</div>
                   <div className="text-xs text-slate-500 mt-1">مدفوع: <span className="font-bold">{stats.paid}</span></div>
-                  {stats.blocked ? <div className="text-xs text-slate-500">مغلق: <span className="font-bold">{stats.blocked}</span></div> : null}
                 </div>
               </div>
-
-              {activeTrip.notes ? (
-                <div className="mt-4 p-3 rounded-2xl bg-slate-50 text-slate-600 text-sm">
-                  <span className="font-bold">ملاحظة: </span>{activeTrip.notes}
-                </div>
-              ) : null}
 
               <div className="mt-4 flex flex-wrap gap-2">
                 <button onClick={() => window.print()} className="px-4 py-2 rounded-2xl bg-orange-100 text-orange-700 font-bold active:bg-orange-200 flex items-center gap-2">
                   <Icons.Print /> طباعة
                 </button>
 
-                <button onClick={exportTripCsv} className="px-4 py-2 rounded-2xl bg-emerald-100 text-emerald-700 font-bold active:bg-emerald-200 flex items-center gap-2">
-                  <Icons.Download /> تصدير CSV
-                </button>
-
-                <button
-                  onClick={() => {
-                    setTripForm({
-                      id: activeTrip.id,
-                      busId: activeTrip.busId,
-                      routeFrom: activeTrip.routeFrom || '',
-                      routeTo: activeTrip.routeTo || '',
-                      departAt: activeTrip.departAt,
-                      maxBookings: (activeTrip.maxBookings === null || activeTrip.maxBookings === undefined) ? '' : activeTrip.maxBookings,
-                      notes: activeTrip.notes || ''
-                    });
-                    setView('form');
-                    setTab('trips');
-                  }}
-                  className="px-4 py-2 rounded-2xl bg-slate-100 text-slate-700 font-bold active:bg-slate-200 flex items-center gap-2"
-                >
-                  <Icons.Edit /> تعديل الرحلة
-                </button>
-
-                <button onClick={clearAllReservations} className="px-4 py-2 rounded-2xl bg-red-50 text-red-700 font-bold active:bg-red-100">
+                <button onClick={() => { clearAllReservations(); }} className="px-4 py-2 rounded-2xl bg-red-50 text-red-700 font-bold active:bg-red-100">
                   مسح الحجوزات
                 </button>
 
@@ -838,14 +697,7 @@
             </div>
 
             <div className="bg-white p-5 rounded-3xl border border-gray-100">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-bold text-slate-800">مخطط المقاعد</h3>
-                <div className="text-xs text-slate-500 flex items-center gap-3">
-                  <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-emerald-600"></span> مدفوع</span>
-                  <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-slate-800"></span> محجوز</span>
-                  <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-slate-300"></span> مغلق</span>
-                </div>
-              </div>
+              <h3 className="font-bold text-slate-800 mb-4">مخطط المقاعد</h3>
               {renderLayout(activeTripBus, activeTrip, false)}
             </div>
 
@@ -854,12 +706,9 @@
                 <h3 className="font-bold text-slate-800">قائمة الركاب</h3>
                 <div className="relative w-full sm:w-80">
                   <div className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400"><Icons.Search /></div>
-                  <input
-                    className="w-full p-3 pr-11 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-                    placeholder="ابحث بالاسم/الجوال/رقم المقعد/ملاحظة..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                  />
+                  <input className="w-full p-3 pr-11 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                         placeholder="ابحث بالاسم/الجوال/رقم المقعد/ملاحظة..."
+                         value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
                 </div>
               </div>
 
@@ -906,27 +755,21 @@
         );
       };
 
-      const logout = async () => {
-        try {
-          if (window.busSystemSignOut) {
-            await window.busSystemSignOut();
-          }
-          location.replace("login.html");
-        } catch (e) {
-          alert("صار خطأ أثناء تسجيل الخروج.");
-        }
-      };
+      if (isLoading) {
+        return (
+          <div className="min-h-screen bg-slate-50 flex items-center justify-center text-slate-500">
+            جار تحميل بياناتك من Firestore...
+          </div>
+        );
+      }
 
       return (
         <div className="min-h-screen bg-slate-50 flex flex-col">
           <header className="bg-white p-4 shadow-sm flex items-center justify-between no-print">
             <div className="flex items-center gap-3">
               {view === 'details' ? (
-                <button
-                  onClick={() => { setView('list'); setActiveTripId(null); setSearchTerm(''); }}
-                  className="p-2.5 rounded-xl bg-slate-100 text-slate-700 active:bg-slate-200"
-                  title="رجوع"
-                >
+                <button onClick={() => { setView('list'); setActiveTripId(null); setSearchTerm(''); }}
+                        className="p-2.5 rounded-xl bg-slate-100 text-slate-700 active:bg-slate-200" title="رجوع">
                   <Icons.Back />
                 </button>
               ) : null}
@@ -937,33 +780,25 @@
 
               <div>
                 <h1 className="text-lg font-bold text-slate-800">{tab === 'trips' ? 'إدارة الرحلات' : 'إدارة الباصات'}</h1>
-                <p className="text-xs text-slate-400">نظام يومي للحجوزات (مكة • الأردن • وغيرها)</p>
+                <p className="text-xs text-slate-400">كل بياناتك محفوظة بحسابك (Firestore)</p>
               </div>
             </div>
 
             <div className="flex items-center gap-2">
               {view !== 'details' && (
                 <div className="flex gap-2">
-                  <button
-                    onClick={() => { setTab('trips'); setView('list'); }}
-                    className={`px-4 py-2 rounded-2xl font-bold flex items-center gap-2 ${tab === 'trips' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'}`}
-                  >
+                  <button onClick={() => { setTab('trips'); setView('list'); }}
+                          className={`px-4 py-2 rounded-2xl font-bold flex items-center gap-2 ${tab === 'trips' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'}`}>
                     <Icons.Trip /> الرحلات
                   </button>
-                  <button
-                    onClick={() => { setTab('buses'); setView('list'); }}
-                    className={`px-4 py-2 rounded-2xl font-bold flex items-center gap-2 ${tab === 'buses' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'}`}
-                  >
+                  <button onClick={() => { setTab('buses'); setView('list'); }}
+                          className={`px-4 py-2 rounded-2xl font-bold flex items-center gap-2 ${tab === 'buses' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'}`}>
                     <Icons.Bus /> الباصات
                   </button>
                 </div>
               )}
 
-              <button
-                onClick={logout}
-                className="px-3 py-2 rounded-2xl bg-slate-900 text-white font-bold flex items-center gap-2 active:bg-slate-800"
-                title="تسجيل خروج"
-              >
+              <button onClick={logout} className="px-3 py-2 rounded-2xl bg-slate-900 text-white font-bold flex items-center gap-2 active:bg-slate-800">
                 <Icons.Logout />
                 <span className="hidden sm:inline">خروج</span>
               </button>
@@ -979,26 +814,27 @@
                 <h2 className="text-2xl font-bold mb-2 text-slate-800">{busForm.id ? 'تعديل الباص' : 'إضافة باص جديد'}</h2>
 
                 <input className="w-full p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 text-lg outline-none"
-                  value={busForm.name} onChange={e => setBusForm({ ...busForm, name: e.target.value })} required placeholder="اسم الباص" />
+                       value={busForm.name} onChange={e => setBusForm({ ...busForm, name: e.target.value })} required placeholder="اسم الباص" />
 
                 <input className="w-full p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 text-lg font-mono uppercase outline-none"
-                  value={busForm.plate} onChange={e => setBusForm({ ...busForm, plate: e.target.value })} required placeholder="رقم اللوحة" />
+                       value={busForm.plate} onChange={e => setBusForm({ ...busForm, plate: e.target.value })} required placeholder="رقم اللوحة" />
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="text-xs text-slate-500 font-bold">عدد المقاعد</label>
                     <input type="number" min="1" className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 outline-none"
-                      value={busForm.seats} onChange={e => setBusForm({ ...busForm, seats: Number(e.target.value) })} required />
+                           value={busForm.seats} onChange={e => setBusForm({ ...busForm, seats: Number(e.target.value) })} required />
                   </div>
                   <div>
                     <label className="text-xs text-slate-500 font-bold">لون الباص</label>
                     <input type="color" className="w-full mt-1 h-[56px] p-2 rounded-2xl bg-slate-50 ring-1 ring-slate-200 outline-none"
-                      value={busForm.color} onChange={e => setBusForm({ ...busForm, color: e.target.value })} />
+                           value={busForm.color} onChange={e => setBusForm({ ...busForm, color: e.target.value })} />
                   </div>
                 </div>
 
                 <div className="flex gap-3 pt-2">
-                  <button type="button" onClick={() => setView('list')} className="flex-1 p-4 rounded-2xl font-bold text-slate-500 bg-slate-100 active:bg-slate-200">إلغاء</button>
+                  <button type="button" onClick={() => setView('list')}
+                          className="flex-1 p-4 rounded-2xl font-bold text-slate-500 bg-slate-100 active:bg-slate-200">إلغاء</button>
                   <button type="submit" className="flex-1 p-4 rounded-2xl font-bold text-white bg-blue-600 shadow-lg shadow-blue-200 active:bg-blue-700">حفظ</button>
                 </div>
               </form>
@@ -1011,7 +847,7 @@
                 <div>
                   <label className="text-xs text-slate-500 font-bold">اختر الباص</label>
                   <select className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-                    value={tripForm.busId} onChange={e => setTripForm({ ...tripForm, busId: e.target.value })} required>
+                          value={tripForm.busId} onChange={e => setTripForm({ ...tripForm, busId: e.target.value })} required>
                     <option value="">-- اختر --</option>
                     {buses.map(b => <option key={b.id} value={b.id}>{b.name} • {b.plate} • {b.seats} مقعد</option>)}
                   </select>
@@ -1022,12 +858,12 @@
                   <div>
                     <label className="text-xs text-slate-500 font-bold">من</label>
                     <input className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-                      value={tripForm.routeFrom} onChange={e => setTripForm({ ...tripForm, routeFrom: e.target.value })} placeholder="مثلاً: الرياض" />
+                           value={tripForm.routeFrom} onChange={e => setTripForm({ ...tripForm, routeFrom: e.target.value })} placeholder="مثلاً: الرياض" />
                   </div>
                   <div>
                     <label className="text-xs text-slate-500 font-bold">إلى</label>
                     <input className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-                      value={tripForm.routeTo} onChange={e => setTripForm({ ...tripForm, routeTo: e.target.value })} placeholder="مثلاً: مكة / الأردن" />
+                           value={tripForm.routeTo} onChange={e => setTripForm({ ...tripForm, routeTo: e.target.value })} placeholder="مثلاً: مكة / الأردن" />
                   </div>
                 </div>
 
@@ -1035,25 +871,27 @@
                   <div>
                     <label className="text-xs text-slate-500 font-bold">وقت الانطلاق</label>
                     <input type="datetime-local" className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-                      value={toDatetimeLocal(tripForm.departAt)} onChange={(e) => setTripForm({ ...tripForm, departAt: parseDatetimeLocal(e.target.value) })} required />
+                           value={toDatetimeLocal(tripForm.departAt)} onChange={(e) => setTripForm({ ...tripForm, departAt: parseDatetimeLocal(e.target.value) })} required />
                   </div>
-
                   <div>
                     <label className="text-xs text-slate-500 font-bold">الحد الأقصى للحجوزات (اختياري)</label>
                     <input type="number" min="0" className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-                      value={tripForm.maxBookings} onChange={(e) => setTripForm({ ...tripForm, maxBookings: e.target.value })} placeholder="اتركه فارغ = حسب المقاعد المتاحة" />
+                           value={tripForm.maxBookings} onChange={(e) => setTripForm({ ...tripForm, maxBookings: e.target.value })} placeholder="اتركه فارغ = حسب المقاعد المتاحة" />
                   </div>
                 </div>
 
                 <div>
                   <label className="text-xs text-slate-500 font-bold">ملاحظات</label>
                   <textarea className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-                    rows="3" value={tripForm.notes} onChange={(e) => setTripForm({ ...tripForm, notes: e.target.value })} placeholder="تعليمات خاصة..." />
+                            rows="3" value={tripForm.notes} onChange={(e) => setTripForm({ ...tripForm, notes: e.target.value })} placeholder="تعليمات خاصة..." />
                 </div>
 
                 <div className="flex gap-3 pt-2">
-                  <button type="button" onClick={() => setView('list')} className="flex-1 p-4 rounded-2xl font-bold text-slate-500 bg-slate-100 active:bg-slate-200">إلغاء</button>
-                  <button type="submit" className="flex-1 p-4 rounded-2xl font-bold text-white bg-blue-600 shadow-lg shadow-blue-200 active:bg-blue-700" disabled={buses.length === 0}>حفظ الرحلة</button>
+                  <button type="button" onClick={() => setView('list')}
+                          className="flex-1 p-4 rounded-2xl font-bold text-slate-500 bg-slate-100 active:bg-slate-200">إلغاء</button>
+                  <button type="submit" className="flex-1 p-4 rounded-2xl font-bold text-white bg-blue-600 shadow-lg shadow-blue-200 active:bg-blue-700" disabled={buses.length === 0}>
+                    حفظ الرحلة
+                  </button>
                 </div>
               </form>
             )}
@@ -1073,7 +911,7 @@
                     busId: buses[0] ? buses[0].id : '',
                     routeFrom: 'الرياض',
                     routeTo: 'مكة',
-                    departAt: Date.now() + 60 * 60 * 1000,
+                    departAt: Date.now() + 60*60*1000,
                     maxBookings: '',
                     notes: ''
                   });
@@ -1146,7 +984,7 @@
                   <div>
                     <h1 className="text-xl font-bold">كشف ركاب رسمي</h1>
                     <p>التاريخ: {new Date().toLocaleDateString('ar-SA')}</p>
-                    <p>موعد الانطلاق: {formatDateTimeAr(activeTrip.departAt)}</p>
+                    <p>موعد الانطلاق: {formatDateTimeAr(activeTrip.departAt || Date.now())}</p>
                   </div>
                   <div className="text-left">
                     <h2 className="text-lg font-bold">{activeTrip.routeFrom || '---'} → {activeTrip.routeTo || '---'}</h2>
