@@ -1,47 +1,114 @@
-<!doctype html>
-<html lang="ar">
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
 <head>
-  <meta charset="utf-8">
-  <title>دخول الشركة</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>تسجيل الدخول - نظام الباصات</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap');
+    body { font-family: 'Tajawal', sans-serif; }
+  </style>
 </head>
-<body>
 
-<h3>دخول الشركة</h3>
+<body class="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+  <div class="w-full max-w-md bg-white rounded-3xl shadow-xl border border-slate-100 p-8">
+    <h1 class="text-2xl font-bold text-slate-800">تسجيل الدخول</h1>
+    <p class="text-sm text-slate-500 mt-1">خاص بموظفي شركة الباصات فقط</p>
 
-<input id="email" placeholder="Email"><br><br>
-<input id="pass" type="password" placeholder="Password"><br><br>
+    <div id="msg" class="hidden mt-4 p-3 rounded-2xl text-sm"></div>
 
-<button id="login">دخول</button>
-<p id="msg"></p>
+    <form id="loginForm" class="mt-6 space-y-4">
+      <div>
+        <label class="text-xs font-bold text-slate-500">الإيميل</label>
+        <input id="email" type="email" required
+          class="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+          placeholder="example@company.com" />
+      </div>
 
-<script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
-import { getAuth, signInWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+      <div>
+        <label class="text-xs font-bold text-slate-500">كلمة المرور</label>
+        <input id="password" type="password" required
+          class="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+          placeholder="••••••••" />
+      </div>
 
-const firebaseConfig = {
-  apiKey: "AIzaSyA2z69uVLcbaQo_BJ3sJic8kyhZaS8uRuE",
-  authDomain: "suhaib-bus-system.firebaseapp.com",
-  projectId: "suhaib-bus-system",
-  messagingSenderId: "992934203240",
-  appId: "1:992934203240:web:be7c580c8b8e5f87ce50dd"
-};
+      <button id="btn" type="submit"
+        class="w-full p-4 rounded-2xl bg-blue-600 text-white font-bold text-lg active:bg-blue-700">
+        دخول
+      </button>
+    </form>
 
-initializeApp(firebaseConfig);
-const auth = getAuth();
+    <p class="text-xs text-slate-400 mt-6">
+      إذا ما عندك حساب، خليه ينضاف من الأدمن داخل Firebase Authentication.
+    </p>
+  </div>
 
-document.getElementById("login").onclick = async () => {
-  try{
-    await signInWithEmailAndPassword(
-      auth,
-      document.getElementById("email").value,
-      document.getElementById("pass").value
-    );
-    location.href = "index.html";
-  }catch(e){
-    document.getElementById("msg").textContent = "خطأ: " + e.message;
-  }
-};
-</script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import {
+      getAuth,
+      onAuthStateChanged,
+      signInWithEmailAndPassword
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 
+    const firebaseConfig = {
+      apiKey: "AIzaSyA2z69uVLcbaQo_BJ3sJic8kyhZaS8uRuE",
+      authDomain: "suhaib-bus-system.firebaseapp.com",
+      projectId: "suhaib-bus-system",
+      messagingSenderId: "992934203240",
+      appId: "1:992934203240:web:be7c580c8b8e5f87ce50dd"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+
+    // إذا المستخدم داخل بالفعل → روح للصفحة الرئيسية
+    onAuthStateChanged(auth, (user) => {
+      if (user) location.replace("index.html");
+    });
+
+    const msg = document.getElementById("msg");
+    const btn = document.getElementById("btn");
+    const form = document.getElementById("loginForm");
+
+    const showMsg = (text, type) => {
+      msg.classList.remove("hidden");
+      msg.textContent = text;
+      msg.className = "mt-4 p-3 rounded-2xl text-sm " + (type === "error"
+        ? "bg-red-50 text-red-700"
+        : "bg-emerald-50 text-emerald-700");
+    };
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = document.getElementById("email").value.trim();
+      const password = document.getElementById("password").value;
+
+      btn.disabled = true;
+      btn.textContent = "جارٍ تسجيل الدخول...";
+
+      try {
+        await signInWithEmailAndPassword(auth, email, password);
+        location.replace("index.html");
+      } catch (err) {
+        // رسائل عربية بسيطة حسب الخطأ
+        const code = (err && err.code) ? err.code : "";
+        if (code === "auth/invalid-credential" || code === "auth/wrong-password") {
+          showMsg("بيانات الدخول غير صحيحة.", "error");
+        } else if (code === "auth/user-not-found") {
+          showMsg("هذا الحساب غير موجود.", "error");
+        } else if (code === "auth/too-many-requests") {
+          showMsg("محاولات كثيرة. جرّب لاحقًا.", "error");
+        } else {
+          showMsg("حصل خطأ أثناء تسجيل الدخول.", "error");
+        }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "دخول";
+      }
+    });
+  </script>
 </body>
 </html>
