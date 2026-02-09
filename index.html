@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>نظام الرحلات وحجوزات الباصات</title>
 
+  <!-- React + Babel + Tailwind -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -13,8 +14,10 @@
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap');
     body { font-family: 'Tajawal', sans-serif; background-color: #f8fafc; margin: 0; padding: 0; }
+
     .seat-grid { display: grid; grid-template-columns: 1fr 1fr 0.4fr 1fr 1fr; gap: 10px; }
     .back-bench { display: flex; gap: 6px; grid-column: span 5; margin-top: 10px; }
+
     .print-only { display: none; }
 
     @media print {
@@ -28,9 +31,56 @@
 </head>
 
 <body>
-  <div id="root"></div>
+  <!-- شاشة تحميل أثناء التحقق من تسجيل الدخول -->
+  <div id="auth-loading" class="min-h-screen flex items-center justify-center text-slate-500">
+    جار التحقق من تسجيل الدخول...
+  </div>
 
-  <script type="text/babel">
+  <!-- التطبيق (مخفي لحد ما نتأكد إنه المستخدم داخل) -->
+  <div id="root" style="display:none"></div>
+
+  <!-- ✅ Firebase Auth Guard (مطلوب) -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyA2z69uVLcbaQo_BJ3sJic8kyhZaS8uRuE",
+      authDomain: "suhaib-bus-system.firebaseapp.com",
+      projectId: "suhaib-bus-system",
+      messagingSenderId: "992934203240",
+      appId: "1:992934203240:web:be7c580c8b8e5f87ce50dd"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+
+    // نعرّض auth و signOut للـReact (لزر تسجيل الخروج)
+    window.BusSystemAuth = auth;
+    window.busSystemSignOut = () => signOut(auth);
+
+    onAuthStateChanged(auth, (user) => {
+      if (!user) {
+        // مش مسجل دخول → روح للّوجين
+        location.replace("login.html");
+        return;
+      }
+
+      // مسجل دخول → افتح النظام
+      window.BUS_AUTH_USER = { uid: user.uid, email: user.email || "" };
+
+      const loading = document.getElementById("auth-loading");
+      const root = document.getElementById("root");
+      if (loading) loading.style.display = "none";
+      if (root) root.style.display = "block";
+
+      // حدث اختياري لو بدك تستخدمه
+      document.dispatchEvent(new CustomEvent("bus-auth-ready", { detail: window.BUS_AUTH_USER }));
+    });
+  </script>
+
+  <!-- ✅ React App -->
+  <script type="text/babel" data-presets="env,react">
     const { useEffect, useMemo, useState } = React;
 
     const STORAGE_KEY = 'bus_trip_booking_v1';
@@ -120,6 +170,13 @@
           <circle cx="11" cy="11" r="7"/>
           <path d="M21 21l-4.3-4.3"/>
         </svg>
+      ),
+      Logout: () => (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+          <path d="M16 17l5-5-5-5"/>
+          <path d="M21 12H9"/>
+        </svg>
       )
     };
 
@@ -136,28 +193,34 @@
     };
 
     const parseDatetimeLocal = (value) => {
-      // value: YYYY-MM-DDTHH:mm
-      if (!value || !value.includes('T')) return Date.now();
-      const [datePart, timePart] = value.split('T');
-      const [y, m, d] = datePart.split('-').map(Number);
-      const [hh, mm] = timePart.split(':').map(Number);
+      if (!value || value.indexOf('T') === -1) return Date.now();
+      const parts = value.split('T');
+      const datePart = parts[0];
+      const timePart = parts[1];
+      const dParts = datePart.split('-').map(Number);
+      const tParts = timePart.split(':').map(Number);
+      const y = dParts[0], m = dParts[1], d = dParts[2];
+      const hh = tParts[0], mm = tParts[1];
       return new Date(y, (m - 1), d, hh, mm, 0, 0).getTime();
     };
 
     const formatDateTimeAr = (ms) => {
       try {
         return new Intl.DateTimeFormat('ar-SA', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(ms));
-      } catch {
-        return new Date(ms).toLocaleString('ar-SA');
+      } catch (e) {
+        try {
+          return new Date(ms).toLocaleString('ar-SA');
+        } catch (e2) {
+          return new Date(ms).toLocaleString();
+        }
       }
     };
 
     const safeParse = (s) => {
-      try { return JSON.parse(s); } catch { return null; }
+      try { return JSON.parse(s); } catch (e) { return null; }
     };
 
     const migrateFromOldIfNeeded = () => {
-      // إذا ما فيه بيانات جديدة، وحصلنا buses_v9 القديمة، نجيبها ونحوّلها
       const current = safeParse(localStorage.getItem(STORAGE_KEY));
       if (current && typeof current === 'object') return current;
 
@@ -165,42 +228,42 @@
       if (!Array.isArray(old) || old.length === 0) return { buses: [], trips: [] };
 
       const now = Date.now();
-      const buses = old.map((b) => ({
-        id: b.id || (now + Math.random()),
+      const buses = old.map((b, idx) => ({
+        id: b.id || (now + idx + 1),
         name: b.name || 'باص',
-        plate: b.plate || '',
+        plate: (b.plate || '').toUpperCase(),
         seats: Number(b.seats || 49),
         color: b.color || '#2563eb',
         createdAt: now
       }));
 
-      const trips = old.map((b, idx) => ({
-        id: now + idx + 1,
-        busId: b.id || buses[idx].id,
-        routeFrom: '',
-        routeTo: '',
-        departAt: now,
-        maxBookings: null,
-        notes: 'رحلة مستوردة من النسخة القديمة',
-        reservations: (() => {
-          const r = {};
-          const oldRes = b.reservations || {};
-          Object.keys(oldRes).forEach((seat) => {
-            r[seat] = { name: String(oldRes[seat]), phone: '', paid: false, note: '', createdAt: now };
-          });
-          return r;
-        })(),
-        blocked: {}
-      }));
+      const trips = old.map((b, idx) => {
+        const resObj = {};
+        const oldRes = b.reservations || {};
+        Object.keys(oldRes).forEach((seat) => {
+          resObj[seat] = { name: String(oldRes[seat]), phone: '', paid: false, note: '', createdAt: now };
+        });
+
+        return {
+          id: now + 1000 + idx,
+          busId: b.id || buses[idx].id,
+          routeFrom: '',
+          routeTo: '',
+          departAt: now,
+          maxBookings: null,
+          notes: 'رحلة مستوردة من النسخة القديمة',
+          reservations: resObj,
+          blocked: {}
+        };
+      });
 
       return { buses, trips };
     };
 
     const App = () => {
       const [data, setData] = useState(() => migrateFromOldIfNeeded());
-      const [tab, setTab] = useState('trips'); // 'trips' | 'buses'
-      const [view, setView] = useState('list'); // list | form | details (depends on tab)
-      const [activeBusId, setActiveBusId] = useState(null);
+      const [tab, setTab] = useState('trips'); // trips | buses
+      const [view, setView] = useState('list'); // list | form | details
       const [activeTripId, setActiveTripId] = useState(null);
 
       const [busForm, setBusForm] = useState({ id: null, name: '', plate: '', seats: 49, color: '#2563eb' });
@@ -214,63 +277,62 @@
         notes: ''
       });
 
-      const [seatModal, setSeatModal] = useState({
-        open: false,
-        seat: null,
-        name: '',
-        phone: '',
-        paid: false,
-        note: '',
-        isBlocked: false
-      });
-
+      const [seatModal, setSeatModal] = useState({ open: false, seat: null, name: '', phone: '', paid: false, note: '', isBlocked: false });
       const [searchTerm, setSearchTerm] = useState('');
       const [highlightSeat, setHighlightSeat] = useState(null);
+      const [authEmail, setAuthEmail] = useState((window.BUS_AUTH_USER && window.BUS_AUTH_USER.email) ? window.BUS_AUTH_USER.email : '');
 
       useEffect(() => {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
       }, [data]);
 
+      useEffect(() => {
+        const onReady = (e) => {
+          if (e && e.detail && e.detail.email) setAuthEmail(e.detail.email);
+        };
+        document.addEventListener('bus-auth-ready', onReady);
+        return () => document.removeEventListener('bus-auth-ready', onReady);
+      }, []);
+
       const buses = data.buses || [];
       const trips = data.trips || [];
 
-      const activeBus = useMemo(() => buses.find(b => b.id === activeBusId) || null, [buses, activeBusId]);
       const activeTrip = useMemo(() => trips.find(t => t.id === activeTripId) || null, [trips, activeTripId]);
-
       const activeTripBus = useMemo(() => {
         if (!activeTrip) return null;
         return buses.find(b => b.id === activeTrip.busId) || null;
       }, [activeTrip, buses]);
 
-      const goTripsList = () => {
-        setTab('trips');
-        setView('list');
-        setActiveTripId(null);
-        setSearchTerm('');
-        setHighlightSeat(null);
-      };
+      const tripStats = (trip, bus) => {
+        if (!trip || !bus) return { reserved: 0, paid: 0, blocked: 0, effectiveMax: 0 };
+        const reserved = Object.keys(trip.reservations || {}).length;
+        const paid = Object.values(trip.reservations || {}).filter(r => r && r.paid).length;
+        const blocked = Object.keys(trip.blocked || {}).length;
 
-      const goBusesList = () => {
-        setTab('buses');
-        setView('list');
-        setActiveBusId(null);
+        const availableSeats = Math.max(0, bus.seats - blocked);
+        const desiredMax = (trip.maxBookings === null || trip.maxBookings === undefined) ? availableSeats : trip.maxBookings;
+        const effectiveMax = Math.min(desiredMax, availableSeats);
+
+        return { reserved, paid, blocked, effectiveMax };
       };
 
       const upsertBus = (e) => {
         e.preventDefault();
         const seats = Math.max(1, Number(busForm.seats || 1));
+        const id = (busForm.id !== null && busForm.id !== undefined) ? busForm.id : Date.now();
+
         const bus = {
-          id: busForm.id ?? Date.now(),
-          name: busForm.name.trim(),
-          plate: busForm.plate.trim().toUpperCase(),
+          id,
+          name: (busForm.name || '').trim(),
+          plate: (busForm.plate || '').trim().toUpperCase(),
           seats,
           color: busForm.color || '#2563eb',
-          createdAt: busForm.id ? (activeBus?.createdAt || Date.now()) : Date.now()
+          createdAt: Date.now()
         };
 
         setData((prev) => {
-          const exists = prev.buses.some(b => b.id === bus.id);
-          const nextBuses = exists ? prev.buses.map(b => b.id === bus.id ? bus : b) : [bus, ...prev.buses];
+          const exists = (prev.buses || []).some(b => b.id === bus.id);
+          const nextBuses = exists ? prev.buses.map(b => b.id === bus.id ? bus : b) : [bus, ...(prev.buses || [])];
           return { ...prev, buses: nextBuses };
         });
 
@@ -284,12 +346,9 @@
         if (!ok) return;
 
         setData((prev) => ({
-          buses: prev.buses.filter(b => b.id !== busId),
-          trips: prev.trips.filter(t => t.busId !== busId)
+          buses: (prev.buses || []).filter(b => b.id !== busId),
+          trips: (prev.trips || []).filter(t => t.busId !== busId)
         }));
-
-        setActiveBusId(null);
-        setView('list');
       };
 
       const upsertTrip = (e) => {
@@ -299,23 +358,28 @@
         const bus = buses.find(b => String(b.id) === String(tripForm.busId));
         if (!bus) { alert('الباص غير موجود'); return; }
 
-        const maxBookingsNum = tripForm.maxBookings === '' ? null : Math.max(0, Math.min(bus.seats, Number(tripForm.maxBookings)));
+        const maxBookingsNum = (tripForm.maxBookings === '' || tripForm.maxBookings === null || tripForm.maxBookings === undefined)
+          ? null
+          : Math.max(0, Math.min(bus.seats, Number(tripForm.maxBookings)));
 
+        const id = (tripForm.id !== null && tripForm.id !== undefined) ? tripForm.id : Date.now();
+
+        const existing = trips.find(t => t.id === id);
         const trip = {
-          id: tripForm.id ?? Date.now(),
+          id,
           busId: bus.id,
           routeFrom: (tripForm.routeFrom || '').trim(),
           routeTo: (tripForm.routeTo || '').trim(),
           departAt: Number(tripForm.departAt || Date.now()),
           maxBookings: maxBookingsNum,
           notes: (tripForm.notes || '').trim(),
-          reservations: tripForm.id ? (activeTrip?.reservations || {}) : {},
-          blocked: tripForm.id ? (activeTrip?.blocked || {}) : {}
+          reservations: existing ? (existing.reservations || {}) : {},
+          blocked: existing ? (existing.blocked || {}) : {}
         };
 
         setData((prev) => {
-          const exists = prev.trips.some(t => t.id === trip.id);
-          const nextTrips = exists ? prev.trips.map(t => t.id === trip.id ? trip : t) : [trip, ...prev.trips];
+          const exists = (prev.trips || []).some(t => t.id === trip.id);
+          const nextTrips = exists ? prev.trips.map(t => t.id === trip.id ? trip : t) : [trip, ...(prev.trips || [])];
           return { ...prev, trips: nextTrips };
         });
 
@@ -324,26 +388,11 @@
       };
 
       const deleteTrip = (tripId) => {
-        const t = trips.find(x => x.id === tripId);
-        if (!t) return;
         const ok = confirm('حذف الرحلة نهائيًا؟');
         if (!ok) return;
-
-        setData((prev) => ({ ...prev, trips: prev.trips.filter(x => x.id !== tripId) }));
+        setData((prev) => ({ ...prev, trips: (prev.trips || []).filter(t => t.id !== tripId) }));
         setActiveTripId(null);
         setView('list');
-      };
-
-      const tripStats = (trip, bus) => {
-        if (!trip || !bus) return { reserved: 0, paid: 0, blocked: 0, effectiveMax: 0 };
-        const reserved = Object.keys(trip.reservations || {}).length;
-        const paid = Object.values(trip.reservations || {}).filter(r => r?.paid).length;
-        const blocked = Object.keys(trip.blocked || {}).length;
-
-        const availableSeats = Math.max(0, bus.seats - blocked);
-        const effectiveMax = Math.min(trip.maxBookings ?? availableSeats, availableSeats);
-
-        return { reserved, paid, blocked, effectiveMax };
       };
 
       const openTripDetails = (tripId) => {
@@ -363,7 +412,6 @@
         const existing = reservations[num];
         const isBlocked = !!blocked[num];
 
-        // منع حجز جديد إذا اكتمل الحد
         if (!existing && !isBlocked && stats.reserved >= stats.effectiveMax) {
           alert('الرحلة مكتملة حسب الحد الأقصى المحدد.');
           return;
@@ -372,25 +420,21 @@
         setSeatModal({
           open: true,
           seat: num,
-          name: existing?.name || '',
-          phone: existing?.phone || '',
-          paid: !!existing?.paid,
-          note: existing?.note || '',
+          name: (existing && existing.name) ? existing.name : '',
+          phone: (existing && existing.phone) ? existing.phone : '',
+          paid: !!(existing && existing.paid),
+          note: (existing && existing.note) ? existing.note : '',
           isBlocked
         });
       };
 
-      const closeSeatModal = () => {
-        setSeatModal({ open: false, seat: null, name: '', phone: '', paid: false, note: '', isBlocked: false });
-      };
+      const closeSeatModal = () => setSeatModal({ open: false, seat: null, name: '', phone: '', paid: false, note: '', isBlocked: false });
 
       const saveSeatReservation = () => {
         if (!activeTrip) return;
-        if (seatModal.isBlocked) {
-          alert('هذا المقعد مغلق. افتحه أولاً ثم احجز.');
-          return;
-        }
-        const name = seatModal.name.trim();
+        if (seatModal.isBlocked) { alert('هذا المقعد مغلق. افتحه أولاً ثم احجز.'); return; }
+
+        const name = (seatModal.name || '').trim();
         if (!name) return;
 
         const seat = seatModal.seat;
@@ -404,7 +448,7 @@
 
         setData((prev) => ({
           ...prev,
-          trips: prev.trips.map(t => {
+          trips: (prev.trips || []).map(t => {
             if (t.id !== activeTrip.id) return t;
             return { ...t, reservations: { ...(t.reservations || {}), [seat]: payload } };
           })
@@ -415,13 +459,13 @@
 
       const deleteSeatReservation = () => {
         if (!activeTrip) return;
-        const seat = seatModal.seat;
         const ok = confirm('إلغاء حجز هذا المقعد؟');
         if (!ok) return;
 
+        const seat = seatModal.seat;
         setData((prev) => ({
           ...prev,
-          trips: prev.trips.map(t => {
+          trips: (prev.trips || []).map(t => {
             if (t.id !== activeTrip.id) return t;
             const next = { ...(t.reservations || {}) };
             delete next[seat];
@@ -438,17 +482,15 @@
 
         setData((prev) => ({
           ...prev,
-          trips: prev.trips.map(t => {
+          trips: (prev.trips || []).map(t => {
             if (t.id !== activeTrip.id) return t;
 
             const nextBlocked = { ...(t.blocked || {}) };
             const nextRes = { ...(t.reservations || {}) };
 
             if (nextBlocked[seat]) {
-              // فتح
               delete nextBlocked[seat];
             } else {
-              // إغلاق - إذا فيه حجز، نسأل إذا بدنا نحذفه
               if (nextRes[seat]) {
                 const ok = confirm('المقعد عليه حجز. إغلاق المقعد سيحذف الحجز. هل تريد المتابعة؟');
                 if (!ok) return t;
@@ -461,7 +503,6 @@
           })
         }));
 
-        // تحديث المودال بناء على الحالة الجديدة
         setSeatModal((m) => ({ ...m, isBlocked: !m.isBlocked, name: '', phone: '', paid: false, note: '' }));
       };
 
@@ -472,7 +513,7 @@
 
         setData((prev) => ({
           ...prev,
-          trips: prev.trips.map(t => t.id === activeTrip.id ? { ...t, reservations: {} } : t)
+          trips: (prev.trips || []).map(t => t.id === activeTrip.id ? { ...t, reservations: {} } : t)
         }));
       };
 
@@ -481,13 +522,17 @@
 
         const res = activeTrip.reservations || {};
         const rows = Object.keys(res)
-          .map(seat => ({ seat: Number(seat), ...res[seat] }))
+          .map(seat => {
+            const r = res[seat] || {};
+            return { seat: Number(seat), name: r.name || '', phone: r.phone || '', paid: !!r.paid, note: r.note || '', createdAt: r.createdAt || Date.now() };
+          })
           .sort((a, b) => a.seat - b.seat);
 
         const header = ['Seat', 'Name', 'Phone', 'Paid', 'Note', 'CreatedAt'];
+
         const escape = (v) => {
-          const s = String(v ?? '');
-          if (/[,"\n]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
+          const s = String((v === null || v === undefined) ? '' : v);
+          if (/[,"\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
           return s;
         };
 
@@ -499,16 +544,16 @@
             escape(r.phone),
             r.paid ? 'YES' : 'NO',
             escape(r.note),
-            new Date(r.createdAt || Date.now()).toISOString()
+            new Date(r.createdAt).toISOString()
           ].join(','))
         ];
 
         const blob = new Blob([csvLines.join('\n')], { type: 'text/csv;charset=utf-8' });
         const a = document.createElement('a');
-        const from = activeTrip.routeFrom || 'من';
-        const to = activeTrip.routeTo || 'إلى';
+        const from = activeTrip.routeFrom || 'from';
+        const to = activeTrip.routeTo || 'to';
         const date = new Date(activeTrip.departAt).toISOString().slice(0, 10);
-        a.download = `trip_${from}_${to}_${date}_${activeTripBus.plate || 'bus'}.csv`.replace(/\s+/g, '_');
+        a.download = (`trip_${from}_${to}_${date}_${activeTripBus.plate || 'bus'}.csv`).replace(/\s+/g, '_');
         a.href = URL.createObjectURL(blob);
         document.body.appendChild(a);
         a.click();
@@ -522,16 +567,16 @@
           const el = document.getElementById(`seat-${seatNum}`);
           if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 50);
-        setTimeout(() => setHighlightSeat(null), 1600);
+        setTimeout(() => setHighlightSeat(null), 1500);
       };
 
-      const renderLayout = (bus, trip, isPrint = false) => {
+      const renderLayout = (bus, trip, isPrint) => {
         if (!bus || !trip) return null;
 
         const seatsPerRow = 4;
         const mod = bus.seats % seatsPerRow;
 
-        // إذا المجموع %4 = 1 غالباً آخر صف 5 (مثل 49)
+        // ✅ منطق الكنبة الخلفية: لو %4 = 1 غالبًا آخر صف 5 (مثل 49)
         const benchSeats = (mod === 1) ? Math.min(5, bus.seats) : (mod || seatsPerRow);
         const rows = Math.max(0, Math.floor((bus.seats - benchSeats) / seatsPerRow));
 
@@ -566,19 +611,16 @@
         return elements;
       };
 
-      const Seat = ({ num, bus, trip, isPrint, isLast }) => {
+      const Seat = ({ num, trip, isPrint, isLast }) => {
         const r = (trip.reservations || {})[num];
         const isBlocked = !!(trip.blocked || {})[num];
-
         const isHighlighted = highlightSeat === num;
 
         if (isPrint) {
           return (
             <div className={`border border-black h-10 flex flex-col items-center justify-center flex-1 ${r ? 'bg-gray-100' : ''}`}>
               <span className="text-[7px] opacity-50">{num}</span>
-              <span className="text-[9px] font-bold truncate px-0.5">
-                {isBlocked ? 'مغلق' : (r?.name || 'فارغ')}
-              </span>
+              <span className="text-[9px] font-bold truncate px-0.5">{isBlocked ? 'مغلق' : (r ? r.name : 'فارغ')}</span>
             </div>
           );
         }
@@ -588,14 +630,14 @@
         let badge = null;
 
         if (isBlocked) {
-          cls = 'bg-slate-200 border-slate-300 text-slate-500';
-          badge = <span className="text-[9px] font-bold opacity-90">مغلق</span>;
-        } else if (r?.paid) {
+          cls = 'bg-slate-200 border-slate-300 text-slate-600';
+          badge = <span className="text-[9px] font-bold">مغلق</span>;
+        } else if (r && r.paid) {
           cls = 'bg-emerald-600 border-emerald-600 text-white';
           badge = <span className="text-[9px] font-bold">مدفوع</span>;
         } else if (r) {
           cls = 'bg-slate-800 border-slate-800 text-white';
-          badge = <span className="text-[9px] font-bold opacity-90">محجوز</span>;
+          badge = <span className="text-[9px] font-bold">محجوز</span>;
         } else {
           badge = <span className="text-[9px] text-gray-400 font-bold">متاح</span>;
         }
@@ -610,19 +652,16 @@
             title={r ? `${r.name}${r.phone ? ' - ' + r.phone : ''}` : (isBlocked ? 'مقعد مغلق' : 'متاح')}
           >
             <span className="absolute top-1 left-1.5 text-[8px] opacity-40">{num}</span>
-
             {isBlocked ? <Icons.Lock /> : (r ? <Icons.User /> : null)}
             {badge}
-
-            {r && !isBlocked && (
-              <span className="text-[9px] w-full truncate px-1 font-bold mt-1">{r.name}</span>
-            )}
+            {r && !isBlocked && <span className="text-[9px] w-full truncate px-1 font-bold mt-1">{r.name}</span>}
           </button>
         );
       };
 
       const TripsList = () => {
         const sorted = [...trips].sort((a, b) => (b.departAt - a.departAt));
+
         return (
           <div className="space-y-4">
             {sorted.length === 0 && (
@@ -635,18 +674,21 @@
               const bus = buses.find(b => b.id === t.busId);
               const stats = tripStats(t, bus);
               const route = `${t.routeFrom || '---'} → ${t.routeTo || '---'}`;
+
               return (
                 <div
                   key={t.id}
                   onClick={() => openTripDetails(t.id)}
                   className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center justify-between active:scale-95 transition-transform cursor-pointer"
                 >
-                  <div className="flex items-center gap-4">
-                    <div className="w-1.5 h-12 rounded-full" style={{ backgroundColor: bus?.color || '#cbd5e1' }}></div>
+                  <div className="flex items-center gap-4 min-w-0">
+                    <div className="w-1.5 h-12 rounded-full" style={{ backgroundColor: bus ? bus.color : '#cbd5e1' }}></div>
                     <div className="min-w-0">
                       <h3 className="font-bold text-lg text-slate-800 truncate">{route}</h3>
                       <p className="text-sm text-slate-500">{formatDateTimeAr(t.departAt)}</p>
-                      <p className="text-xs text-slate-400 font-mono uppercase truncate">{bus ? `${bus.name} • ${bus.plate}` : 'باص محذوف'}</p>
+                      <p className="text-xs text-slate-400 font-mono uppercase truncate">
+                        {bus ? `${bus.name} • ${bus.plate}` : 'باص محذوف'}
+                      </p>
                     </div>
                   </div>
 
@@ -674,13 +716,11 @@
                 لا يوجد باصات. اضغط + لإضافة باص.
               </div>
             )}
+
             {buses.map((b) => {
               const busTripsCount = trips.filter(t => t.busId === b.id).length;
               return (
-                <div
-                  key={b.id}
-                  className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center justify-between"
-                >
+                <div key={b.id} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center justify-between">
                   <div className="flex items-center gap-4 min-w-0">
                     <div className="w-1.5 h-12 rounded-full" style={{ backgroundColor: b.color }}></div>
                     <div className="min-w-0">
@@ -692,12 +732,7 @@
 
                   <div className="flex gap-2">
                     <button
-                      onClick={() => {
-                        setActiveBusId(b.id);
-                        setBusForm({ id: b.id, name: b.name, plate: b.plate, seats: b.seats, color: b.color });
-                        setView('form');
-                        setTab('buses');
-                      }}
+                      onClick={() => { setBusForm({ id: b.id, name: b.name, plate: b.plate, seats: b.seats, color: b.color }); setView('form'); setTab('buses'); }}
                       className="p-2.5 rounded-xl bg-slate-100 text-slate-700 active:bg-slate-200"
                       title="تعديل"
                     >
@@ -720,31 +755,26 @@
 
       const TripDetails = () => {
         if (!activeTrip || !activeTripBus) {
-          return (
-            <div className="bg-white p-6 rounded-2xl border border-gray-100 text-slate-500">
-              الرحلة غير موجودة أو الباص محذوف.
-            </div>
-          );
+          return <div className="bg-white p-6 rounded-2xl border border-gray-100 text-slate-500">الرحلة غير موجودة أو الباص محذوف.</div>;
         }
 
         const stats = tripStats(activeTrip, activeTripBus);
+        const route = `${activeTrip.routeFrom || '---'} → ${activeTrip.routeTo || '---'}`;
 
         const resEntries = Object.entries(activeTrip.reservations || {})
           .map(([seat, r]) => ({ seat: Number(seat), ...r }))
           .sort((a, b) => a.seat - b.seat);
 
+        const q = (searchTerm || '').trim().toLowerCase();
         const filtered = resEntries.filter((r) => {
-          if (!searchTerm.trim()) return true;
-          const q = searchTerm.trim().toLowerCase();
+          if (!q) return true;
           return (
             String(r.seat).includes(q) ||
-            (r.name || '').toLowerCase().includes(q) ||
-            (r.phone || '').toLowerCase().includes(q) ||
-            ((r.note || '').toLowerCase().includes(q))
+            String(r.name || '').toLowerCase().includes(q) ||
+            String(r.phone || '').toLowerCase().includes(q) ||
+            String(r.note || '').toLowerCase().includes(q)
           );
         });
-
-        const route = `${activeTrip.routeFrom || '---'} → ${activeTrip.routeTo || '---'}`;
 
         return (
           <div className="space-y-4">
@@ -755,6 +785,7 @@
                   <p className="text-slate-500">{formatDateTimeAr(activeTrip.departAt)}</p>
                   <p className="text-xs text-slate-400 font-mono uppercase truncate">{activeTripBus.name} • {activeTripBus.plate}</p>
                 </div>
+
                 <div className="text-left">
                   <div className="text-blue-600 font-bold text-xl">{stats.reserved} / {stats.effectiveMax}</div>
                   <div className="text-xs text-slate-500 mt-1">مدفوع: <span className="font-bold">{stats.paid}</span></div>
@@ -769,30 +800,23 @@
               ) : null}
 
               <div className="mt-4 flex flex-wrap gap-2">
-                <button
-                  onClick={() => window.print()}
-                  className="px-4 py-2 rounded-2xl bg-orange-100 text-orange-700 font-bold active:bg-orange-200 flex items-center gap-2"
-                >
+                <button onClick={() => window.print()} className="px-4 py-2 rounded-2xl bg-orange-100 text-orange-700 font-bold active:bg-orange-200 flex items-center gap-2">
                   <Icons.Print /> طباعة
                 </button>
 
-                <button
-                  onClick={exportTripCsv}
-                  className="px-4 py-2 rounded-2xl bg-emerald-100 text-emerald-700 font-bold active:bg-emerald-200 flex items-center gap-2"
-                >
+                <button onClick={exportTripCsv} className="px-4 py-2 rounded-2xl bg-emerald-100 text-emerald-700 font-bold active:bg-emerald-200 flex items-center gap-2">
                   <Icons.Download /> تصدير CSV
                 </button>
 
                 <button
                   onClick={() => {
-                    // تحرير الرحلة
                     setTripForm({
                       id: activeTrip.id,
                       busId: activeTrip.busId,
                       routeFrom: activeTrip.routeFrom || '',
                       routeTo: activeTrip.routeTo || '',
                       departAt: activeTrip.departAt,
-                      maxBookings: activeTrip.maxBookings ?? '',
+                      maxBookings: (activeTrip.maxBookings === null || activeTrip.maxBookings === undefined) ? '' : activeTrip.maxBookings,
                       notes: activeTrip.notes || ''
                     });
                     setView('form');
@@ -803,17 +827,11 @@
                   <Icons.Edit /> تعديل الرحلة
                 </button>
 
-                <button
-                  onClick={clearAllReservations}
-                  className="px-4 py-2 rounded-2xl bg-red-50 text-red-700 font-bold active:bg-red-100"
-                >
+                <button onClick={clearAllReservations} className="px-4 py-2 rounded-2xl bg-red-50 text-red-700 font-bold active:bg-red-100">
                   مسح الحجوزات
                 </button>
 
-                <button
-                  onClick={() => deleteTrip(activeTrip.id)}
-                  className="px-4 py-2 rounded-2xl bg-red-600 text-white font-bold active:bg-red-700 flex items-center gap-2"
-                >
+                <button onClick={() => deleteTrip(activeTrip.id)} className="px-4 py-2 rounded-2xl bg-red-600 text-white font-bold active:bg-red-700 flex items-center gap-2">
                   <Icons.Trash /> حذف الرحلة
                 </button>
               </div>
@@ -828,7 +846,6 @@
                   <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-slate-300"></span> مغلق</span>
                 </div>
               </div>
-
               {renderLayout(activeTripBus, activeTrip, false)}
             </div>
 
@@ -874,10 +891,7 @@
                           </td>
                           <td className="py-2 text-slate-600 truncate max-w-[180px]">{r.note || '-'}</td>
                           <td className="py-2">
-                            <button
-                              onClick={() => scrollToSeat(r.seat)}
-                              className="px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700 font-bold active:bg-slate-200"
-                            >
+                            <button onClick={() => scrollToSeat(r.seat)} className="px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700 font-bold active:bg-slate-200">
                               عرض المقعد
                             </button>
                           </td>
@@ -888,9 +902,19 @@
                 </div>
               )}
             </div>
-
           </div>
         );
+      };
+
+      const logout = async () => {
+        try {
+          if (window.busSystemSignOut) {
+            await window.busSystemSignOut();
+          }
+          location.replace("login.html");
+        } catch (e) {
+          alert("صار خطأ أثناء تسجيل الخروج.");
+        }
       };
 
       return (
@@ -912,98 +936,70 @@
               </div>
 
               <div>
-                <h1 className="text-lg font-bold text-slate-800">
-                  {tab === 'trips' ? 'إدارة الرحلات' : 'إدارة الباصات'}
-                </h1>
-                <p className="text-xs text-slate-400">
-                  نظام يومي للحجوزات (مكة • الأردن • وغيرها)
-                </p>
+                <h1 className="text-lg font-bold text-slate-800">{tab === 'trips' ? 'إدارة الرحلات' : 'إدارة الباصات'}</h1>
+                <p className="text-xs text-slate-400">نظام يومي للحجوزات (مكة • الأردن • وغيرها)</p>
               </div>
             </div>
 
-            {/* Tabs */}
-            {view !== 'details' && (
-              <div className="flex gap-2">
-                <button
-                  onClick={() => { setTab('trips'); setView('list'); }}
-                  className={`px-4 py-2 rounded-2xl font-bold flex items-center gap-2 ${tab === 'trips' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'}`}
-                >
-                  <Icons.Trip /> الرحلات
-                </button>
-                <button
-                  onClick={() => { setTab('buses'); setView('list'); }}
-                  className={`px-4 py-2 rounded-2xl font-bold flex items-center gap-2 ${tab === 'buses' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'}`}
-                >
-                  <Icons.Bus /> الباصات
-                </button>
-              </div>
-            )}
+            <div className="flex items-center gap-2">
+              {view !== 'details' && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => { setTab('trips'); setView('list'); }}
+                    className={`px-4 py-2 rounded-2xl font-bold flex items-center gap-2 ${tab === 'trips' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'}`}
+                  >
+                    <Icons.Trip /> الرحلات
+                  </button>
+                  <button
+                    onClick={() => { setTab('buses'); setView('list'); }}
+                    className={`px-4 py-2 rounded-2xl font-bold flex items-center gap-2 ${tab === 'buses' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'}`}
+                  >
+                    <Icons.Bus /> الباصات
+                  </button>
+                </div>
+              )}
+
+              <button
+                onClick={logout}
+                className="px-3 py-2 rounded-2xl bg-slate-900 text-white font-bold flex items-center gap-2 active:bg-slate-800"
+                title="تسجيل خروج"
+              >
+                <Icons.Logout />
+                <span className="hidden sm:inline">خروج</span>
+              </button>
+            </div>
           </header>
 
           <main className="flex-1 p-4 max-w-2xl mx-auto w-full no-print">
-            {/* LIST */}
             {view === 'list' && tab === 'trips' && <TripsList />}
             {view === 'list' && tab === 'buses' && <BusesList />}
 
-            {/* FORMS */}
             {view === 'form' && tab === 'buses' && (
               <form onSubmit={upsertBus} className="bg-white p-6 rounded-3xl shadow-xl border border-gray-100 space-y-4">
                 <h2 className="text-2xl font-bold mb-2 text-slate-800">{busForm.id ? 'تعديل الباص' : 'إضافة باص جديد'}</h2>
 
-                <input
-                  className="w-full p-4 rounded-2xl bg-slate-50 border-none ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 text-lg outline-none"
-                  value={busForm.name}
-                  onChange={e => setBusForm({ ...busForm, name: e.target.value })}
-                  required
-                  placeholder="اسم الباص (مثلاً: الملكي)"
-                />
+                <input className="w-full p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 text-lg outline-none"
+                  value={busForm.name} onChange={e => setBusForm({ ...busForm, name: e.target.value })} required placeholder="اسم الباص" />
 
-                <input
-                  className="w-full p-4 rounded-2xl bg-slate-50 border-none ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 text-lg font-mono uppercase outline-none"
-                  value={busForm.plate}
-                  onChange={e => setBusForm({ ...busForm, plate: e.target.value })}
-                  required
-                  placeholder="رقم اللوحة"
-                />
+                <input className="w-full p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 text-lg font-mono uppercase outline-none"
+                  value={busForm.plate} onChange={e => setBusForm({ ...busForm, plate: e.target.value })} required placeholder="رقم اللوحة" />
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="text-xs text-slate-500 font-bold">عدد المقاعد</label>
-                    <input
-                      type="number"
-                      className="w-full mt-1 p-4 rounded-2xl bg-slate-50 border-none ring-1 ring-slate-200 outline-none"
-                      value={busForm.seats}
-                      onChange={e => setBusForm({ ...busForm, seats: Number(e.target.value) })}
-                      required
-                      min="1"
-                    />
+                    <input type="number" min="1" className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 outline-none"
+                      value={busForm.seats} onChange={e => setBusForm({ ...busForm, seats: Number(e.target.value) })} required />
                   </div>
-
                   <div>
                     <label className="text-xs text-slate-500 font-bold">لون الباص</label>
-                    <input
-                      type="color"
-                      className="w-full mt-1 h-[56px] p-2 rounded-2xl bg-slate-50 border-none ring-1 ring-slate-200 outline-none"
-                      value={busForm.color}
-                      onChange={e => setBusForm({ ...busForm, color: e.target.value })}
-                    />
+                    <input type="color" className="w-full mt-1 h-[56px] p-2 rounded-2xl bg-slate-50 ring-1 ring-slate-200 outline-none"
+                      value={busForm.color} onChange={e => setBusForm({ ...busForm, color: e.target.value })} />
                   </div>
                 </div>
 
                 <div className="flex gap-3 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setView('list')}
-                    className="flex-1 p-4 rounded-2xl font-bold text-slate-500 bg-slate-100 active:bg-slate-200"
-                  >
-                    إلغاء
-                  </button>
-                  <button
-                    type="submit"
-                    className="flex-1 p-4 rounded-2xl font-bold text-white bg-blue-600 shadow-lg shadow-blue-200 active:bg-blue-700"
-                  >
-                    حفظ
-                  </button>
+                  <button type="button" onClick={() => setView('list')} className="flex-1 p-4 rounded-2xl font-bold text-slate-500 bg-slate-100 active:bg-slate-200">إلغاء</button>
+                  <button type="submit" className="flex-1 p-4 rounded-2xl font-bold text-white bg-blue-600 shadow-lg shadow-blue-200 active:bg-blue-700">حفظ</button>
                 </div>
               </form>
             )}
@@ -1014,123 +1010,57 @@
 
                 <div>
                   <label className="text-xs text-slate-500 font-bold">اختر الباص</label>
-                  <select
-                    className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-                    value={tripForm.busId}
-                    onChange={e => setTripForm({ ...tripForm, busId: e.target.value })}
-                    required
-                  >
+                  <select className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                    value={tripForm.busId} onChange={e => setTripForm({ ...tripForm, busId: e.target.value })} required>
                     <option value="">-- اختر --</option>
-                    {buses.map(b => (
-                      <option key={b.id} value={b.id}>{b.name} • {b.plate} • {b.seats} مقعد</option>
-                    ))}
+                    {buses.map(b => <option key={b.id} value={b.id}>{b.name} • {b.plate} • {b.seats} مقعد</option>)}
                   </select>
-                  {buses.length === 0 ? (
-                    <p className="text-xs text-red-600 mt-2">لا يوجد باصات. أضف باص أولاً.</p>
-                  ) : null}
+                  {buses.length === 0 ? <p className="text-xs text-red-600 mt-2">لا يوجد باصات. أضف باص أولاً.</p> : null}
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="text-xs text-slate-500 font-bold">من</label>
-                    <input
-                      className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-                      value={tripForm.routeFrom}
-                      onChange={e => setTripForm({ ...tripForm, routeFrom: e.target.value })}
-                      placeholder="مثلاً: الرياض"
-                      list="fromList"
-                    />
-                    <datalist id="fromList">
-                      <option value="الرياض" />
-                      <option value="جدة" />
-                      <option value="الدمام" />
-                      <option value="المدينة" />
-                      <option value="تبوك" />
-                      <option value="عمّان" />
-                      <option value="العقبة" />
-                    </datalist>
+                    <input className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                      value={tripForm.routeFrom} onChange={e => setTripForm({ ...tripForm, routeFrom: e.target.value })} placeholder="مثلاً: الرياض" />
                   </div>
                   <div>
                     <label className="text-xs text-slate-500 font-bold">إلى</label>
-                    <input
-                      className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-                      value={tripForm.routeTo}
-                      onChange={e => setTripForm({ ...tripForm, routeTo: e.target.value })}
-                      placeholder="مثلاً: مكة / الأردن"
-                      list="toList"
-                    />
-                    <datalist id="toList">
-                      <option value="مكة" />
-                      <option value="المدينة" />
-                      <option value="جدة" />
-                      <option value="عمّان" />
-                      <option value="الأردن" />
-                      <option value="العقبة" />
-                      <option value="البترا" />
-                    </datalist>
+                    <input className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                      value={tripForm.routeTo} onChange={e => setTripForm({ ...tripForm, routeTo: e.target.value })} placeholder="مثلاً: مكة / الأردن" />
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="text-xs text-slate-500 font-bold">وقت الانطلاق</label>
-                    <input
-                      type="datetime-local"
-                      className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-                      value={toDatetimeLocal(tripForm.departAt)}
-                      onChange={(e) => setTripForm({ ...tripForm, departAt: parseDatetimeLocal(e.target.value) })}
-                      required
-                    />
+                    <input type="datetime-local" className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                      value={toDatetimeLocal(tripForm.departAt)} onChange={(e) => setTripForm({ ...tripForm, departAt: parseDatetimeLocal(e.target.value) })} required />
                   </div>
 
                   <div>
                     <label className="text-xs text-slate-500 font-bold">الحد الأقصى للحجوزات (اختياري)</label>
-                    <input
-                      type="number"
-                      className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-                      value={tripForm.maxBookings}
-                      onChange={(e) => setTripForm({ ...tripForm, maxBookings: e.target.value })}
-                      placeholder="اتركه فارغ = حسب المقاعد المتاحة"
-                      min="0"
-                    />
+                    <input type="number" min="0" className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                      value={tripForm.maxBookings} onChange={(e) => setTripForm({ ...tripForm, maxBookings: e.target.value })} placeholder="اتركه فارغ = حسب المقاعد المتاحة" />
                   </div>
                 </div>
 
                 <div>
                   <label className="text-xs text-slate-500 font-bold">ملاحظات</label>
-                  <textarea
-                    className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-                    rows="3"
-                    value={tripForm.notes}
-                    onChange={(e) => setTripForm({ ...tripForm, notes: e.target.value })}
-                    placeholder="مثلاً: توقف استراحة 20 دقيقة، أو تعليمات خاصة..."
-                  />
+                  <textarea className="w-full mt-1 p-4 rounded-2xl bg-slate-50 ring-1 ring-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                    rows="3" value={tripForm.notes} onChange={(e) => setTripForm({ ...tripForm, notes: e.target.value })} placeholder="تعليمات خاصة..." />
                 </div>
 
                 <div className="flex gap-3 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setView('list')}
-                    className="flex-1 p-4 rounded-2xl font-bold text-slate-500 bg-slate-100 active:bg-slate-200"
-                  >
-                    إلغاء
-                  </button>
-                  <button
-                    type="submit"
-                    className="flex-1 p-4 rounded-2xl font-bold text-white bg-blue-600 shadow-lg shadow-blue-200 active:bg-blue-700"
-                    disabled={buses.length === 0}
-                  >
-                    حفظ الرحلة
-                  </button>
+                  <button type="button" onClick={() => setView('list')} className="flex-1 p-4 rounded-2xl font-bold text-slate-500 bg-slate-100 active:bg-slate-200">إلغاء</button>
+                  <button type="submit" className="flex-1 p-4 rounded-2xl font-bold text-white bg-blue-600 shadow-lg shadow-blue-200 active:bg-blue-700" disabled={buses.length === 0}>حفظ الرحلة</button>
                 </div>
               </form>
             )}
 
-            {/* DETAILS */}
             {view === 'details' && tab === 'trips' && <TripDetails />}
           </main>
 
-          {/* Floating + */}
           {view === 'list' && (
             <button
               onClick={() => {
@@ -1140,7 +1070,7 @@
                 } else {
                   setTripForm({
                     id: null,
-                    busId: buses[0]?.id || '',
+                    busId: buses[0] ? buses[0].id : '',
                     routeFrom: 'الرياض',
                     routeTo: 'مكة',
                     departAt: Date.now() + 60 * 60 * 1000,
@@ -1157,84 +1087,50 @@
             </button>
           )}
 
-          {/* Seat Modal */}
           {seatModal.open && (
-            <div
-              className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-6 no-print"
-              onClick={(e) => { if (e.target === e.currentTarget) closeSeatModal(); }}
-            >
-              <div className="bg-white w-full max-w-md rounded-[32px] p-7 shadow-2xl animate-in zoom-in duration-300">
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-6 no-print"
+                 onClick={(e) => { if (e.target === e.currentTarget) closeSeatModal(); }}>
+              <div className="bg-white w-full max-w-md rounded-[32px] p-7 shadow-2xl">
                 <div className="flex justify-between items-center mb-5">
                   <h3 className="text-2xl font-bold text-slate-800">المقعد {seatModal.seat}</h3>
-                  <button onClick={closeSeatModal} className="p-2 rounded-xl bg-slate-100 active:bg-slate-200">
-                    <Icons.X />
-                  </button>
+                  <button onClick={closeSeatModal} className="p-2 rounded-xl bg-slate-100 active:bg-slate-200"><Icons.X /></button>
                 </div>
 
                 <div className="flex items-center justify-between gap-2 mb-4">
-                  <button
-                    onClick={toggleBlockSeat}
-                    className={`flex-1 p-3 rounded-2xl font-bold flex items-center justify-center gap-2 ${
-                      seatModal.isBlocked ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-700'
-                    }`}
-                  >
+                  <button onClick={toggleBlockSeat}
+                          className={`flex-1 p-3 rounded-2xl font-bold flex items-center justify-center gap-2 ${seatModal.isBlocked ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-700'}`}>
                     {seatModal.isBlocked ? <Icons.Unlock /> : <Icons.Lock />}
                     {seatModal.isBlocked ? 'فتح المقعد' : 'إغلاق المقعد'}
                   </button>
 
-                  <button
-                    onClick={() => setSeatModal((m) => ({ ...m, paid: !m.paid }))}
-                    className={`flex-1 p-3 rounded-2xl font-bold flex items-center justify-center gap-2 ${
-                      seatModal.paid ? 'bg-emerald-600 text-white' : 'bg-orange-100 text-orange-700'
-                    }`}
-                    disabled={seatModal.isBlocked}
-                    title={seatModal.isBlocked ? 'المقعد مغلق' : 'تغيير حالة الدفع'}
-                  >
-                    <Icons.Check />
-                    {seatModal.paid ? 'مدفوع' : 'غير مدفوع'}
+                  <button onClick={() => setSeatModal((m) => ({ ...m, paid: !m.paid }))}
+                          className={`flex-1 p-3 rounded-2xl font-bold flex items-center justify-center gap-2 ${seatModal.paid ? 'bg-emerald-600 text-white' : 'bg-orange-100 text-orange-700'}`}
+                          disabled={seatModal.isBlocked}>
+                    <Icons.Check /> {seatModal.paid ? 'مدفوع' : 'غير مدفوع'}
                   </button>
                 </div>
 
                 <div className={`${seatModal.isBlocked ? 'opacity-50 pointer-events-none' : ''}`}>
-                  <input
-                    autoFocus
-                    className="w-full p-4 rounded-2xl bg-slate-50 border-none ring-2 ring-slate-100 focus:ring-blue-500 text-lg mb-3 outline-none"
-                    placeholder="اسم الراكب..."
-                    value={seatModal.name}
-                    onChange={e => setSeatModal({ ...seatModal, name: e.target.value })}
-                  />
+                  <input autoFocus className="w-full p-4 rounded-2xl bg-slate-50 ring-2 ring-slate-100 focus:ring-blue-500 text-lg mb-3 outline-none"
+                         placeholder="اسم الراكب..." value={seatModal.name} onChange={e => setSeatModal({ ...seatModal, name: e.target.value })} />
 
-                  <input
-                    className="w-full p-4 rounded-2xl bg-slate-50 border-none ring-2 ring-slate-100 focus:ring-blue-500 text-lg mb-3 outline-none"
-                    placeholder="رقم الجوال (اختياري)"
-                    value={seatModal.phone}
-                    onChange={e => setSeatModal({ ...seatModal, phone: e.target.value })}
-                    inputMode="tel"
-                  />
+                  <input className="w-full p-4 rounded-2xl bg-slate-50 ring-2 ring-slate-100 focus:ring-blue-500 text-lg mb-3 outline-none"
+                         placeholder="رقم الجوال (اختياري)" value={seatModal.phone} onChange={e => setSeatModal({ ...seatModal, phone: e.target.value })} inputMode="tel" />
 
-                  <textarea
-                    className="w-full p-4 rounded-2xl bg-slate-50 border-none ring-2 ring-slate-100 focus:ring-blue-500 text-base mb-4 outline-none"
-                    placeholder="ملاحظة (اختياري)"
-                    value={seatModal.note}
-                    onChange={e => setSeatModal({ ...seatModal, note: e.target.value })}
-                    rows="2"
-                  />
+                  <textarea className="w-full p-4 rounded-2xl bg-slate-50 ring-2 ring-slate-100 focus:ring-blue-500 text-base mb-4 outline-none"
+                            placeholder="ملاحظة (اختياري)" value={seatModal.note} onChange={e => setSeatModal({ ...seatModal, note: e.target.value })} rows="2" />
                 </div>
 
                 <div className="flex flex-col gap-2">
-                  <button
-                    onClick={saveSeatReservation}
-                    className="p-4 rounded-2xl bg-blue-600 text-white font-bold text-lg shadow-lg active:bg-blue-700"
-                    disabled={seatModal.isBlocked}
-                  >
+                  <button onClick={saveSeatReservation}
+                          className="p-4 rounded-2xl bg-blue-600 text-white font-bold text-lg shadow-lg active:bg-blue-700"
+                          disabled={seatModal.isBlocked}>
                     {seatModal.isBlocked ? 'المقعد مغلق' : 'حفظ الحجز'}
                   </button>
 
                   {activeTrip && activeTrip.reservations && activeTrip.reservations[seatModal.seat] && (
-                    <button
-                      onClick={deleteSeatReservation}
-                      className="p-4 rounded-2xl bg-red-50 text-red-600 font-bold active:bg-red-100"
-                    >
+                    <button onClick={deleteSeatReservation}
+                            className="p-4 rounded-2xl bg-red-50 text-red-600 font-bold active:bg-red-100">
                       إلغاء الحجز
                     </button>
                   )}
@@ -1243,7 +1139,6 @@
             </div>
           )}
 
-          {/* PRINT AREA */}
           <div className="print-only p-6 bg-white text-black" dir="rtl">
             {activeTrip && activeTripBus && (
               <div className="print-container">
@@ -1260,50 +1155,7 @@
                   </div>
                 </div>
 
-                {(() => {
-                  const stats = tripStats(activeTrip, activeTripBus);
-                  return (
-                    <div className="grid grid-cols-4 text-center text-xs font-bold border border-black p-2 mb-3">
-                      <div>مقاعد الباص: {activeTripBus.seats}</div>
-                      <div>المحجوز: {stats.reserved}</div>
-                      <div>مدفوع: {stats.paid}</div>
-                      <div>حد الرحلة: {stats.effectiveMax}</div>
-                    </div>
-                  );
-                })()}
-
-                <div className="mb-4">
-                  {renderLayout(activeTripBus, activeTrip, true)}
-                </div>
-
-                <div className="border border-black p-2">
-                  <div className="font-bold mb-2">جدول الركاب</div>
-                  <table className="w-full text-[10px]">
-                    <thead>
-                      <tr className="border-b border-black">
-                        <th className="py-1 text-right">مقعد</th>
-                        <th className="py-1 text-right">الاسم</th>
-                        <th className="py-1 text-right">الجوال</th>
-                        <th className="py-1 text-right">الدفع</th>
-                        <th className="py-1 text-right">ملاحظة</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {Object.entries(activeTrip.reservations || {})
-                        .map(([seat, r]) => ({ seat: Number(seat), ...r }))
-                        .sort((a, b) => a.seat - b.seat)
-                        .map((r) => (
-                          <tr key={r.seat} className="border-b border-black/20">
-                            <td className="py-1 font-bold">{r.seat}</td>
-                            <td className="py-1">{r.name}</td>
-                            <td className="py-1">{r.phone || '-'}</td>
-                            <td className="py-1">{r.paid ? 'مدفوع' : 'غير مدفوع'}</td>
-                            <td className="py-1">{r.note || '-'}</td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
+                <div className="mb-4">{renderLayout(activeTripBus, activeTrip, true)}</div>
 
                 <div className="mt-8 pt-6 border-t border-black text-center text-sm">
                   التوقيع والختم: ............................
@@ -1311,7 +1163,6 @@
               </div>
             )}
           </div>
-
         </div>
       );
     };
